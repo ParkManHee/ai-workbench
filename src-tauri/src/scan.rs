@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 #[derive(Serialize, Clone)]
-pub struct Project { pub name: String, pub path: String, pub has_origin: bool, pub last_activity: u64 }
+pub struct Project { pub name: String, pub path: String, /* pub has_origin: bool, */ pub last_activity: u64 }
 
 fn realpath(p: &str) -> String {
     fs::canonicalize(p).map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|_| p.to_string())
@@ -36,8 +36,8 @@ pub fn scan_roots(roots: &[String]) -> Vec<Project> {
             if name.starts_with('.') || name == "node_modules" { continue; }
             let ps = path.to_string_lossy().to_string();
             if is_git_repo_root(&ps) {
-                let has_origin = true; // is_git_repo_root 가 origin 보장
-                out.push(Project { name, path: realpath(&ps), has_origin, last_activity: mtime(&path) });
+                // let has_origin = true; // is_git_repo_root 가 origin 보장
+                out.push(Project { name, path: realpath(&ps), /* has_origin, */ last_activity: mtime(&path) });
             }
         }
     }
