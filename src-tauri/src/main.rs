@@ -45,10 +45,15 @@ fn run_status(log: String, workdir: String) -> runlog::RunStatus {
     runlog::run_status(&log, &workdir)
 }
 
+#[tauri::command]
+fn cancel_run(pgid: i32, workdir: String) -> bool {
+    runner::cancel_run(pgid, &workdir)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run, read_log, run_status])
+        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run, read_log, run_status, cancel_run])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

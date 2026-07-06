@@ -37,9 +37,31 @@ pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, pr
     Ok(RunHandle { log, pgid })
 }
 
+pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
+    if pgid <= 1 { return false; }
+    unsafe { libc::killpg(pgid, libc::SIGTERM); }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    if unsafe { libc::killpg(pgid, 0) } == 0 {
+        unsafe { libc::killpg(pgid, libc::SIGKILL); }
+    }
+    crate::lock::release(workdir);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancel_kills_group() {
+        // sleep 30 을 setsid로 띄우고 pgid 취소
+        use std::os::unix::process::CommandExt;
+        let child = unsafe { std::process::Command::new("sh").args(["-c","sleep 30"]).pre_exec(||{libc::setsid();Ok(())}).spawn().unwrap() };
+        let pgid = child.id() as i32;
+        let wd = std::env::temp_dir().join("awb_cancel_wd"); std::fs::create_dir_all(&wd).unwrap();
+        assert!(cancel_run(pgid, wd.to_str().unwrap()));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(unsafe { libc::killpg(pgid, 0) } != 0); // 그룹 사라짐
+    }
     #[test]
     fn start_run_spawns_and_locks() {
         let dir = std::env::temp_dir().join("awb_runner_proj"); std::fs::create_dir_all(&dir).unwrap();
