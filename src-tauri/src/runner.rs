@@ -14,26 +14,29 @@ fn app_dir() -> String {
 }
 
 pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, prompt: &str, runs_dir: &str) -> Result<RunHandle, String> {
+    let settings = crate::paths::expand_tilde(settings);
+    let runs_dir = crate::paths::expand_tilde(runs_dir);
+    let workdir_e = crate::paths::expand_tilde(workdir);
     // 락 선점
     let placeholder = LockInfo { pid: std::process::id(), pgid: 0, start_ts: now(), source: "app".into() };
-    if let Err(cur) = acquire(workdir, &placeholder) {
+    if let Err(cur) = acquire(&workdir_e, &placeholder) {
         return Err(format!("이미 실행 중: {} (pid {})", cur.source, cur.pid));
     }
-    std::fs::create_dir_all(runs_dir).ok();
+    std::fs::create_dir_all(&runs_dir).map_err(|e| { crate::lock::release(&workdir_e); format!("runs_dir 생성 실패: {e}") })?;
     let log = format!("{}/{}.log", runs_dir, now());
     let wrapper = format!("{}/awb-run.sh", app_dir());
     let plan_flag = if plan { "1" } else { "0" };
     let child = unsafe {
         Command::new("sh")
-            .args([&wrapper, claude_bin, workdir, &log, settings, plan_flag, prompt])
+            .args([&wrapper, claude_bin, &workdir_e, &log, &settings, plan_flag, prompt])
             .pre_exec(|| { libc::setsid(); Ok(()) })  // 자체 세션/PGID
             .stdin(std::process::Stdio::null())
             .spawn()
-    }.map_err(|e| { crate::lock::release(workdir); format!("spawn 실패: {e}") })?;
+    }.map_err(|e| { crate::lock::release(&workdir_e); format!("spawn 실패: {e}") })?;
     let pgid = child.id() as i32; // setsid 후 자식 pid == pgid
     // 락 메타 pgid 갱신
     let info = LockInfo { pid: child.id(), pgid, start_ts: now(), source: "app".into() };
-    let _ = std::fs::write(crate::lock::lock_dir(workdir).join("meta.json"), serde_json::to_string(&info).unwrap());
+    let _ = std::fs::write(crate::lock::lock_dir(&workdir_e).join("meta.json"), serde_json::to_string(&info).unwrap());
     Ok(RunHandle { log, pgid })
 }
 

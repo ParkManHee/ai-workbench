@@ -27,7 +27,7 @@ fn mtime(p: &std::path::Path) -> u64 {
 pub fn scan_roots(roots: &[String]) -> Vec<Project> {
     let mut out = Vec::new();
     for root in roots {
-        let expanded = shellexpand_tilde(root);
+        let expanded = crate::paths::expand_tilde(root);
         let entries = match fs::read_dir(&expanded) { Ok(e) => e, Err(_) => continue };
         for e in entries.flatten() {
             let path = e.path();
@@ -43,13 +43,6 @@ pub fn scan_roots(roots: &[String]) -> Vec<Project> {
     }
     out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     out
-}
-
-fn shellexpand_tilde(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") { return format!("{}/{}", home, rest); }
-    }
-    p.to_string()
 }
 
 #[cfg(test)]

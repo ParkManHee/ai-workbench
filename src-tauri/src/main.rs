@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod lock;
+mod paths;
 mod preflight;
 mod runner;
 mod runlog;
