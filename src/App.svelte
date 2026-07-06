@@ -1,18 +1,13 @@
 <script lang="ts">
-  import { call } from "./lib/api";
+  import PreflightBanner from "./lib/PreflightBanner.svelte";
+  import ProjectList from "./lib/ProjectList.svelte";
 
-  let pingResult = $state("(loading...)");
-
-  call<string>("ping")
-    .then((result) => {
-      pingResult = result;
-    })
-    .catch((err) => {
-      pingResult = `error: ${err}`;
-    });
+  // 기본 roots — Plan 4에서 설정화 예정
+  const roots = ["~/bitbucket", "~/github"];
 </script>
 
 <main>
   <h1>ai-workbench</h1>
-  <p>ping result: <strong>{pingResult}</strong></p>
+  <PreflightBanner {roots} />
+  <ProjectList {roots} />
 </main>
