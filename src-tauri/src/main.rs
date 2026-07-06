@@ -4,6 +4,7 @@
 mod preflight;
 mod scan;
 mod shell_env;
+mod worklog;
 
 #[tauri::command]
 fn ping() -> String {
@@ -20,10 +21,15 @@ fn preflight(roots: Vec<String>, claude_override: Option<String>) -> preflight::
     preflight::run_preflight(&roots, claude_override)
 }
 
+#[tauri::command]
+fn worklog_badge(name: String) -> Option<worklog::Badge> {
+    worklog::badge_for(&name)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight])
+        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
