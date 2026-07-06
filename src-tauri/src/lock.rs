@@ -40,10 +40,17 @@ pub fn acquire(workdir: &str, info: &LockInfo) -> Result<(), LockInfo> {
                 if pgid_alive(cur.pgid) { return Err(cur); }
             }
             // stale(소유자 죽음/메타 없음) → 탈취
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir(&dir).map_err(|_| info.clone())?;
-            let _ = fs::write(dir.join("meta.json"), serde_json::to_string(info).unwrap());
-            Ok(())
+            // rename은 원자적: 이 정확한 stale dir을 rename할 수 있는 건 단 하나의 레이서뿐이다.
+            // 패자의 rename은 실패하고(이미 사라짐), 이후 create_dir 경쟁에서 승자에게 밀려 Err를 반환한다.
+            // → 갓 생성된 승자의 lock dir을 절대 덮어쓰지 않는다.
+            let tmp = dir.with_extension(format!("stale.{}", std::process::id()));
+            if fs::rename(&dir, &tmp).is_ok() {
+                let _ = fs::remove_dir_all(&tmp);
+            }
+            match fs::create_dir(&dir) {
+                Ok(_) => { let _ = fs::write(dir.join("meta.json"), serde_json::to_string(info).unwrap()); Ok(()) }
+                Err(_) => Err(status(workdir).unwrap_or_else(|| info.clone())),
+            }
         }
     }
 }
@@ -65,6 +72,35 @@ mod tests {
         assert!(acquire(w, &info(my_pgid)).is_err());
         release(w);
         assert!(acquire(w, &info(my_pgid)).is_ok());
+        release(w);
+    }
+
+    #[test]
+    fn stale_lock_is_stolen() {
+        let d = std::env::temp_dir().join("awb_lock_proj_stale"); let _ = std::fs::create_dir_all(&d);
+        let w = d.to_str().unwrap();
+        release(w); // 청소
+
+        // 확실히 죽은(존재하지 않는) pgid를 찾는다.
+        let dead_pgid: i32 = 999_999;
+        assert!(!pgid_alive(dead_pgid), "test precondition failed: pgid {} unexpectedly alive", dead_pgid);
+
+        // 죽은 소유자의 lock dir을 수동으로 생성.
+        let dir = lock_dir(w);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale_info = info(dead_pgid);
+        fs::write(dir.join("meta.json"), serde_json::to_string(&stale_info).unwrap()).unwrap();
+
+        // 새 소유자가 stale lock을 탈취할 수 있어야 한다.
+        let my_pgid = unsafe { libc::getpgrp() };
+        assert!(acquire(w, &info(my_pgid)).is_ok());
+
+        // 새 소유자가 반영되어 있어야 한다.
+        let cur = status(w).expect("lock status should exist after steal");
+        assert_eq!(cur.pid, std::process::id());
+        assert_eq!(cur.pgid, my_pgid);
+        assert_eq!(cur.source, "test");
+
         release(w);
     }
 }
