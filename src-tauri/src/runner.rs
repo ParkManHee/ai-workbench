@@ -41,6 +41,7 @@ pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, pr
 }
 
 pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
+    // pgid<=1: 유효하지 않은 그룹 — 락은 여기서 해제하지 않음(호출자는 RunHandle.pgid=live child.id()만 전달)
     if pgid <= 1 { return false; }
     unsafe { libc::killpg(pgid, libc::SIGTERM); }
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -48,7 +49,8 @@ pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
         unsafe { libc::killpg(pgid, libc::SIGKILL); }
     }
     crate::lock::release(workdir);
-    true
+    let dead = unsafe { libc::killpg(pgid, 0) } != 0;
+    dead
 }
 
 #[cfg(test)]
