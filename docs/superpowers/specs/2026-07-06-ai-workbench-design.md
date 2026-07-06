@@ -1,8 +1,8 @@
-# claude-console — 설계 스펙 (v0)
+# ai-workbench — 설계 스펙 (v0)
 
 작성일: 2026-07-06
 상태: 설계 승인됨 (구현 계획 대기)
-저장소: `ParkManHee/claude-console` (개인 GitHub), 로컬 `~/github/claude-console`
+저장소: `ParkManHee/ai-workbench` (개인 GitHub), 로컬 `~/github/ai-workbench`
 
 ## 1. 목적
 
@@ -131,7 +131,7 @@ Tauri 앱: 얇은 Rust 코어 + 웹 UI(Svelte).
 ## 10. 스택 / 산출물
 
 - Tauri(Rust 코어) + Svelte(웹 UI) + 기존 셸 스크립트 재사용.
-- 저장소: `ParkManHee/claude-console`.
+- 저장소: `ParkManHee/ai-workbench`.
 - 기존 `~/.claude` 자산 변경 최소화: worker-settings 보강, agent-run.sh/project-poll.py에 공유 락 추가는 별도 작업으로 조율.
 
 ## 11. 오픈 항목 (구현 계획에서 확정)
