@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::fs;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 #[derive(Serialize, Clone)]
 pub struct Project { pub name: String, pub path: String, pub has_origin: bool, pub last_activity: u64 }
