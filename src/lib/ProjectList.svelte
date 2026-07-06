@@ -3,7 +3,7 @@
   import { filterProjects } from "./scan";
   import type { Project, Badge } from "./types";
 
-  let { roots }: { roots: string[] } = $props();
+  let { roots, onSelect }: { roots: string[]; onSelect?: (p: Project) => void } = $props();
 
   let projects = $state<Project[]>([]);
   let badges = $state<Record<string, Badge | null>>({});
@@ -75,8 +75,10 @@
             {pinned.includes(p.name) ? "📌" : "☆"}
           </button>
           <span class="badge">{badgeText(badges[p.name])}</span>
-          <span class="name">{p.name}</span>
-          <span class="path">{p.path}</span>
+          <button class="name-btn" onclick={() => onSelect?.(p)}>
+            <span class="name">{p.name}</span>
+            <span class="path">{p.path}</span>
+          </button>
         </li>
       {/each}
     </ul>
@@ -110,6 +112,19 @@
     border: none;
     cursor: pointer;
     font-size: 1rem;
+  }
+  .name-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+    font: inherit;
   }
   .name {
     font-weight: 600;
