@@ -1,0 +1,61 @@
+use serde::Serialize;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+use crate::lock::{acquire, LockInfo};
+
+#[derive(Serialize, Clone)]
+pub struct RunHandle { pub log: String, pub pgid: i32 }
+
+fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
+fn app_dir() -> String {
+    // awb-run.sh 위치: 앱 리소스. 개발 중엔 리포 scripts/. 배포 시 Tauri resource 경로로 교체(TODO).
+    std::env::var("AWB_SCRIPTS_DIR").unwrap_or_else(|_| format!("{}/github/ai-workbench/scripts", std::env::var("HOME").unwrap_or_default()))
+}
+
+pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, prompt: &str, runs_dir: &str) -> Result<RunHandle, String> {
+    // 락 선점
+    let placeholder = LockInfo { pid: std::process::id(), pgid: 0, start_ts: now(), source: "app".into() };
+    if let Err(cur) = acquire(workdir, &placeholder) {
+        return Err(format!("이미 실행 중: {} (pid {})", cur.source, cur.pid));
+    }
+    std::fs::create_dir_all(runs_dir).ok();
+    let log = format!("{}/{}.log", runs_dir, now());
+    let wrapper = format!("{}/awb-run.sh", app_dir());
+    let plan_flag = if plan { "1" } else { "0" };
+    let child = unsafe {
+        Command::new("sh")
+            .args([&wrapper, claude_bin, workdir, &log, settings, plan_flag, prompt])
+            .pre_exec(|| { libc::setsid(); Ok(()) })  // 자체 세션/PGID
+            .stdin(std::process::Stdio::null())
+            .spawn()
+    }.map_err(|e| { crate::lock::release(workdir); format!("spawn 실패: {e}") })?;
+    let pgid = child.id() as i32; // setsid 후 자식 pid == pgid
+    // 락 메타 pgid 갱신
+    let info = LockInfo { pid: child.id(), pgid, start_ts: now(), source: "app".into() };
+    let _ = std::fs::write(crate::lock::lock_dir(workdir).join("meta.json"), serde_json::to_string(&info).unwrap());
+    Ok(RunHandle { log, pgid })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn start_run_spawns_and_locks() {
+        let dir = std::env::temp_dir().join("awb_runner_proj"); std::fs::create_dir_all(&dir).unwrap();
+        let runs = std::env::temp_dir().join("awb_runs"); std::fs::create_dir_all(&runs).unwrap();
+        crate::lock::release(dir.to_str().unwrap());
+        // 가짜 claude: 0.5초 자고 종료
+        let fake = std::env::temp_dir().join("fakeclaude2");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 0.3\necho done\n").unwrap();
+        #[cfg(unix)]{ use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); }
+        let h = start_run(fake.to_str().unwrap(), dir.to_str().unwrap(), "/tmp/ws.json", false, "hi", runs.to_str().unwrap()).unwrap();
+        assert!(std::path::Path::new(&h.log).exists() || h.pgid > 0);
+        // 실행 중 재요청 → 락 거부
+        assert!(start_run(fake.to_str().unwrap(), dir.to_str().unwrap(), "/tmp/ws.json", false, "hi", runs.to_str().unwrap()).is_err());
+        // 완료 대기 후 .done 확인
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert!(std::path::Path::new(&format!("{}.done", h.log)).exists());
+        crate::lock::release(dir.to_str().unwrap());
+    }
+}

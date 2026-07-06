@@ -3,6 +3,7 @@
 
 mod lock;
 mod preflight;
+mod runner;
 mod scan;
 mod shell_env;
 mod worklog;
@@ -27,10 +28,16 @@ fn worklog_badge(name: String) -> Option<worklog::Badge> {
     worklog::badge_for(&name)
 }
 
+#[tauri::command]
+fn start_run(claude_bin: String, workdir: String, settings: String, plan: bool, prompt: String, runs_dir: Option<String>) -> Result<runner::RunHandle, String> {
+    let runs_dir = runs_dir.unwrap_or_else(|| format!("{}/.claude/.awb-runs", std::env::var("HOME").unwrap_or_default()));
+    runner::start_run(&claude_bin, &workdir, &settings, plan, &prompt, &runs_dir)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge])
+        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
