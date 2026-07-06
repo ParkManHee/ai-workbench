@@ -20,6 +20,10 @@ pub fn lock_dir(workdir: &str) -> PathBuf {
 }
 
 fn pgid_alive(pgid: i32) -> bool {
+    // pgid<=0은 유효한 소유자 pgid가 아니다(0=killpg가 호출자 자신의 그룹을 대상으로 하므로 오판;
+    // 음수도 비정상). acquire()가 러너 업데이트 전에 과도기적으로 pgid:0인 메타를 쓸 수 있으므로,
+    // 이런 값은 "살아있음"으로 간주해 탈취를 막는다(안전한 기본값: 훔치지 않는다).
+    if pgid <= 0 { return true; }
     // killpg(pgid, 0): 존재하면 Ok
     unsafe { libc::killpg(pgid, 0) == 0 }
 }
@@ -61,6 +65,13 @@ pub fn release(workdir: &str) { let _ = fs::remove_dir_all(lock_dir(workdir)); }
 mod tests {
     use super::*;
     fn info(pgid: i32) -> LockInfo { LockInfo{ pid: std::process::id(), pgid, start_ts: 1, source: "test".into() } }
+
+    #[test]
+    fn pgid_zero_or_negative_is_treated_as_alive() {
+        assert!(pgid_alive(0));
+        assert!(pgid_alive(-1));
+    }
+
     #[test]
     fn acquire_is_exclusive_then_releasable() {
         let d = std::env::temp_dir().join("awb_lock_proj"); let _ = std::fs::create_dir_all(&d);

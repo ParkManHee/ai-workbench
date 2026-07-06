@@ -40,10 +40,15 @@ fn read_log(log: String, offset: u64) -> runlog::LogChunk {
     runlog::read_log(&log, offset)
 }
 
+#[tauri::command]
+fn run_status(log: String, workdir: String) -> runlog::RunStatus {
+    runlog::run_status(&log, &workdir)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run, read_log])
+        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run, read_log, run_status])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
