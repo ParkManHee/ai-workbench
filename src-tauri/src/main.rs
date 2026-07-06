@@ -4,6 +4,7 @@
 mod lock;
 mod preflight;
 mod runner;
+mod runlog;
 mod scan;
 mod shell_env;
 mod worklog;
@@ -34,10 +35,15 @@ fn start_run(claude_bin: String, workdir: String, settings: String, plan: bool, 
     runner::start_run(&claude_bin, &workdir, &settings, plan, &prompt, &runs_dir)
 }
 
+#[tauri::command]
+fn read_log(log: String, offset: u64) -> runlog::LogChunk {
+    runlog::read_log(&log, offset)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run])
+        .invoke_handler(tauri::generate_handler![ping, list_projects, preflight, worklog_badge, start_run, read_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
