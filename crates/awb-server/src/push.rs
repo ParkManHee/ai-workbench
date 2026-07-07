@@ -94,6 +94,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                     );
                     send(&tokens, &title, &status.verdict);
                 }
+                st.runs.remove(&run_id); // 완료된 run은 레지스트리에서 제거(취소/완료 후 무한 누적 방지)
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
