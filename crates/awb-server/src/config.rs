@@ -5,9 +5,19 @@ pub struct ServerConfig {
     pub port: u16,
     pub devices_path: String,
     pub runs_dir: String,
+    pub sessions_dir: String,
+    pub settings_path: String,
+    pub claude_bin: String,
 }
 
 fn home() -> String { std::env::var("HOME").unwrap_or_default() }
+
+/// claude 실행 파일 경로 해석: `AWB_CLAUDE_BIN` 환경변수 우선, 없으면 로그인 셸 PATH에서 탐색, 그마저 없으면 `~/.local/bin/claude`.
+fn resolve_claude_bin() -> String {
+    if let Ok(p) = std::env::var("AWB_CLAUDE_BIN") { if !p.is_empty() { return p; } }
+    if let Some(p) = awb_core::shell_env::which_in(&awb_core::shell_env::login_path(), "claude") { return p; }
+    format!("{}/.local/bin/claude", home())
+}
 
 impl ServerConfig {
     pub fn from_env() -> ServerConfig {
@@ -17,6 +27,9 @@ impl ServerConfig {
             port,
             devices_path: format!("{}/.claude/.awb-devices.json", home()),
             runs_dir: format!("{}/.claude/.awb-runs", home()),
+            sessions_dir: format!("{}/.claude/.awb-sessions", home()),
+            settings_path: format!("{}/.claude/worker-settings.json", home()),
+            claude_bin: resolve_claude_bin(),
         }
     }
 }
@@ -43,7 +56,7 @@ mod tests {
     #[test]
     fn bind_addr_uses_loopback_without_tailscale() {
         // tailscale 미설치/미탐지 환경 가정 시 루프백 폴백 포맷 확인
-        let cfg = ServerConfig { port: 9999, devices_path: "/x".into(), runs_dir: "/y".into() };
+        let cfg = ServerConfig { port: 9999, devices_path: "/x".into(), runs_dir: "/y".into(), sessions_dir: "/s".into(), settings_path: "/w".into(), claude_bin: "claude".into() };
         let addr = bind_addr(&cfg);
         assert!(addr.ends_with(":9999"));
         assert!(addr.starts_with("100.") || addr.starts_with("127.0.0.1"));

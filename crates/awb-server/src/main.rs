@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod routes;
+mod runreg;
 mod sessions;
 mod streamevt;
 
@@ -34,6 +35,11 @@ async fn serve() {
         pairing: std::sync::Arc::new(std::sync::Mutex::new(Some(pc))),
         roots: routes::default_roots(),
         power: power::PowerGuard::new(),
+        sessions: sessions::SessionStore::load(&cfg.sessions_dir),
+        runs: runreg::RunRegistry::new(),
+        claude_bin: cfg.claude_bin.clone(),
+        settings_path: cfg.settings_path.clone(),
+        runs_dir: cfg.runs_dir.clone(),
     };
     let app = routes::router(state);
     let listener = match tokio::net::TcpListener::bind(&addr).await {

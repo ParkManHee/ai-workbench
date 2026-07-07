@@ -1,9 +1,11 @@
-// crates/awb-server/src/routes.rs (Task 3에서 최소 선언, Task 4에서 /projects 추가, Task 6에서 완성)
+// crates/awb-server/src/routes.rs (Task 3에서 최소 선언, Task 4에서 /projects·/chat·/status·/cancel·/preflight 추가)
 use std::sync::{Arc, Mutex};
 use crate::auth::DeviceStore;
 use crate::pairing::PairingCode;
 use crate::power::PowerGuard;
-use axum::extract::Query;
+use crate::runreg::RunRegistry;
+use crate::sessions::SessionStore;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::{extract::State, Json};
 use serde::Serialize;
@@ -14,6 +16,11 @@ pub struct AppState {
     pub pairing: Arc<Mutex<Option<PairingCode>>>,
     pub roots: Vec<String>,
     pub power: PowerGuard,
+    pub sessions: SessionStore,
+    pub runs: RunRegistry,
+    pub claude_bin: String,
+    pub settings_path: String,
+    pub runs_dir: String,
 }
 
 #[derive(Serialize)]
@@ -58,7 +65,40 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
     StatusCode::OK
 }
 
-/// 완성 라우터: `/pair`는 무인증, 나머지(`/health`,`/projects`,`/diff`,`/awake`)는 `require_token` 미들웨어 적용.
+#[derive(serde::Deserialize)]
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool }
+#[derive(Serialize)]
+pub struct ChatResult { pub run_id: String, pub log: String }
+
+pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
+    // 프로젝트 경로 확인
+    let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
+    let resume = st.sessions.get(&project);
+    let h = awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir)
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
+    let run_id = h.log.rsplit('/').next().unwrap_or(&h.log).trim_end_matches(".log").to_string();
+    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
+    // 완료 워처(푸시) spawn — Task 7에서 push::spawn_watch 로 연결. 이 태스크에선 등록만.
+    Ok(Json(ChatResult { run_id, log: h.log }))
+}
+
+pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<Json<awb_core::runlog::RunStatus>, StatusCode> {
+    let meta = st.runs.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(awb_core::runlog::run_status(&meta.log, &meta.workdir)))
+}
+
+pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<StatusCode, StatusCode> {
+    let meta = st.runs.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
+    let dead = awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
+    Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
+}
+
+pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::preflight::Preflight> {
+    Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
+}
+
+/// 완성 라우터: `/pair`는 무인증, 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{get, post};
     use axum::middleware::from_fn_with_state;
@@ -68,6 +108,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/projects", get(projects_handler))
         .route("/diff", get(diff_handler))
         .route("/awake", post(awake_handler))
+        .route("/chat/{project}", post(chat_handler))
+        .route("/status/{run_id}", get(status_handler))
+        .route("/cancel/{run_id}", post(cancel_handler))
+        .route("/preflight", get(preflight_handler))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
     // 무인증: /pair
     axum::Router::new()
@@ -86,11 +130,17 @@ mod tests {
     fn tmp(name: &str) -> String { std::env::temp_dir().join(name).to_string_lossy().to_string() }
 
     fn test_state(root: &str, devices_path: &str) -> AppState {
+        let sessions_dir = std::env::temp_dir().join("awb_routes_test_sessions").to_string_lossy().to_string();
         AppState {
             devices: crate::auth::DeviceStore::load(devices_path),
             pairing: std::sync::Arc::new(std::sync::Mutex::new(None)),
             roots: vec![root.to_string()],
             power: crate::power::PowerGuard::new(),
+            sessions: crate::sessions::SessionStore::load(&sessions_dir),
+            runs: crate::runreg::RunRegistry::new(),
+            claude_bin: "claude".into(),
+            settings_path: "/tmp/ws.json".into(),
+            runs_dir: std::env::temp_dir().join("awb_routes_test_runs").to_string_lossy().to_string(),
         }
     }
 
