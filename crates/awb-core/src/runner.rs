@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::lock::{acquire, LockInfo};
 
@@ -8,6 +9,18 @@ use crate::lock::{acquire, LockInfo};
 pub struct RunHandle { pub log: String, pub pgid: i32 }
 
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
+
+/// 동일 초·동일 프로세스 내 다중 실행이 같은 로그 파일명을 갖지 않도록
+/// epoch초 + pid + 프로세스-로컬 원자 카운터를 조합한 충돌 방지 로그 경로 생성.
+/// (awb-server는 로그 파일명에서 run_id를 파생하므로, 동일 파일명 충돌 시
+/// 로그 truncation·잘못된 취소·락 누수로 이어질 수 있었음.)
+static LOG_SEQ: AtomicU64 = AtomicU64::new(0);
+fn unique_log_path(runs_dir: &str) -> String {
+    let secs = now();
+    let pid = std::process::id();
+    let seq = LOG_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{}/{}-{}-{}.log", runs_dir, secs, pid, seq)
+}
 fn app_dir() -> String {
     // awb-run.sh 위치: 앱 리소스. 개발 중엔 리포 scripts/. 배포 시 Tauri resource 경로로 교체(TODO).
     std::env::var("AWB_SCRIPTS_DIR").unwrap_or_else(|_| format!("{}/github/ai-workbench/scripts", std::env::var("HOME").unwrap_or_default()))
@@ -23,7 +36,7 @@ pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, pr
         return Err(format!("이미 실행 중: {} (pid {})", cur.source, cur.pid));
     }
     std::fs::create_dir_all(&runs_dir).map_err(|e| { crate::lock::release(&workdir_e); format!("runs_dir 생성 실패: {e}") })?;
-    let log = format!("{}/{}.log", runs_dir, now());
+    let log = unique_log_path(&runs_dir);
     let wrapper = format!("{}/awb-run.sh", app_dir());
     let plan_flag = if plan { "1" } else { "0" };
     let child = unsafe {
@@ -49,7 +62,7 @@ pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: b
         return Err(format!("이미 실행 중: {} (pid {})", cur.source, cur.pid));
     }
     std::fs::create_dir_all(&runs_dir).map_err(|e| { crate::lock::release(&workdir_e); format!("runs_dir 생성 실패: {e}") })?;
-    let log = format!("{}/{}.log", runs_dir, now());
+    let log = unique_log_path(&runs_dir);
     let wrapper = format!("{}/awb-run-stream.sh", app_dir());
     let plan_flag = if plan { "1" } else { "0" };
     let resume_arg = resume.unwrap_or("");
@@ -82,6 +95,15 @@ pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unique_log_path_differs_on_consecutive_calls() {
+        let runs = std::env::temp_dir().join("awb_runs_unique");
+        std::fs::create_dir_all(&runs).unwrap();
+        let a = unique_log_path(runs.to_str().unwrap());
+        let b = unique_log_path(runs.to_str().unwrap());
+        assert_ne!(a, b, "동일 초·동일 프로세스라도 카운터로 경로가 달라야 함");
+    }
+
     #[test]
     fn cancel_kills_group() {
         // sleep 30 을 setsid로 띄우고 pgid 취소
