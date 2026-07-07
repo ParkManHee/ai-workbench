@@ -1,8 +1,10 @@
-// crates/awb-server/src/routes.rs (Task 3에서 최소 선언, Task 4에서 /projects 추가, Task 6에서 확장)
+// crates/awb-server/src/routes.rs (Task 3에서 최소 선언, Task 4에서 /projects 추가, Task 6에서 완성)
 use std::sync::{Arc, Mutex};
 use crate::auth::DeviceStore;
 use crate::pairing::PairingCode;
+use crate::power::PowerGuard;
 use axum::extract::Query;
+use axum::http::StatusCode;
 use axum::{extract::State, Json};
 use serde::Serialize;
 
@@ -11,6 +13,7 @@ pub struct AppState {
     pub devices: DeviceStore,
     pub pairing: Arc<Mutex<Option<PairingCode>>>,
     pub roots: Vec<String>,
+    pub power: PowerGuard,
 }
 
 #[derive(Serialize)]
@@ -47,12 +50,29 @@ pub fn default_roots() -> Vec<String> {
     }
 }
 
-// 이 태스크의 router(): /projects, /diff 만(인증 미적용 — Task 6에서 완성 라우터로 대체)
+#[derive(serde::Deserialize)]
+pub struct AwakeBody { pub on: bool }
+
+pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>) -> StatusCode {
+    st.power.set(b.on);
+    StatusCode::OK
+}
+
+/// 완성 라우터: `/pair`는 무인증, 나머지(`/health`,`/projects`,`/diff`,`/awake`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
-    use axum::routing::get;
-    axum::Router::new()
+    use axum::routing::{get, post};
+    use axum::middleware::from_fn_with_state;
+    // 인증 필요 라우트
+    let protected = axum::Router::new()
+        .route("/health", get(|| async { "ok" }))
         .route("/projects", get(projects_handler))
         .route("/diff", get(diff_handler))
+        .route("/awake", post(awake_handler))
+        .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
+    // 무인증: /pair
+    axum::Router::new()
+        .route("/pair", get(crate::pairing::pair_handler))
+        .merge(protected)
         .with_state(state)
 }
 
@@ -63,13 +83,17 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    fn test_state(root: &str) -> AppState {
+    fn tmp(name: &str) -> String { std::env::temp_dir().join(name).to_string_lossy().to_string() }
+
+    fn test_state(root: &str, devices_path: &str) -> AppState {
         AppState {
-            devices: crate::auth::DeviceStore::load("/tmp/awb_dev_unused.json"),
+            devices: crate::auth::DeviceStore::load(devices_path),
             pairing: std::sync::Arc::new(std::sync::Mutex::new(None)),
             roots: vec![root.to_string()],
+            power: crate::power::PowerGuard::new(),
         }
     }
+
     #[tokio::test]
     async fn projects_returns_scanned_repos() {
         // origin 있는 가짜 git repo 하나 생성
@@ -77,12 +101,62 @@ mod tests {
         let repo = base.join("demo"); std::fs::create_dir_all(&repo).unwrap();
         std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "init"]).output().unwrap();
         std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "remote", "add", "origin", "x"]).output().unwrap();
-        let app = crate::routes::router(test_state(base.to_str().unwrap()));
-        let res = app.oneshot(Request::builder().uri("/projects").header("authorization","Bearer skip").body(Body::empty()).unwrap()).await.unwrap();
-        // 인증 미들웨어는 Task 6에서 붙음 — 이 단계 라우터는 /projects에 인증 미적용(단위검증). 200 + demo 포함.
+        let devices_path = tmp("awb_routes_devices_projects.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state(base.to_str().unwrap(), &devices_path);
+        let token = "tok-projects-ok";
+        state.devices.add(token, "test-device");
+        let app = crate::routes::router(state);
+        let res = app.oneshot(Request::builder().uri("/projects").header("authorization", format!("Bearer {token}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8_lossy(&bytes);
         assert!(body.contains("demo"));
+    }
+
+    #[tokio::test]
+    async fn projects_without_auth_header_is_unauthorized() {
+        let devices_path = tmp("awb_routes_devices_noauth.json"); let _ = std::fs::remove_file(&devices_path);
+        let app = crate::routes::router(test_state("/tmp", &devices_path));
+        let res = app.oneshot(Request::builder().uri("/projects").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn projects_with_wrong_scheme_is_unauthorized() {
+        let devices_path = tmp("awb_routes_devices_wrongscheme.json"); let _ = std::fs::remove_file(&devices_path);
+        let app = crate::routes::router(test_state("/tmp", &devices_path));
+        let res = app.oneshot(Request::builder().uri("/projects").header("authorization", "Basic xxx").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn projects_with_unknown_token_is_unauthorized() {
+        let devices_path = tmp("awb_routes_devices_unknown.json"); let _ = std::fs::remove_file(&devices_path);
+        let app = crate::routes::router(test_state("/tmp", &devices_path));
+        let res = app.oneshot(Request::builder().uri("/projects").header("authorization", "Bearer unknown-token").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn projects_with_known_token_is_ok() {
+        let devices_path = tmp("awb_routes_devices_known.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        let token = "tok-known-good";
+        state.devices.add(token, "test-device");
+        let app = crate::routes::router(state);
+        let res = app.oneshot(Request::builder().uri("/projects").header("authorization", format!("Bearer {token}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn pair_route_requires_no_auth() {
+        let devices_path = tmp("awb_routes_devices_pair.json"); let _ = std::fs::remove_file(&devices_path);
+        let mut state = test_state("/tmp", &devices_path);
+        state.pairing = std::sync::Arc::new(std::sync::Mutex::new(Some(crate::pairing::PairingCode { code: "ABC234".into(), expires_at: u64::MAX })));
+        let app = crate::routes::router(state);
+        // 무인증(Authorization 헤더 없음) + 틀린 코드 → 403이어야 하며 절대 401이 아니어야 함(인증 미들웨어 미적용 확인)
+        let res = app.oneshot(Request::builder().uri("/pair?code=WRONG1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 }

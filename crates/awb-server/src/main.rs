@@ -2,9 +2,8 @@ mod auth;
 mod config;
 mod gitdiff;
 mod pairing;
+mod power;
 mod routes;
-
-use axum::{routing::get, Router};
 
 #[tokio::main]
 async fn main() {
@@ -21,8 +20,20 @@ async fn serve() {
     if config::tailnet_ipv4().is_none() {
         eprintln!("경고: tailscale IPv4 미탐지 — 루프백({addr})에만 바인드(외부 폰 접속 불가). Tailscale 실행 확인.");
     }
-    // 임시 라우터(/health) — Task 6에서 routes::router로 교체
-    let app: Router = Router::new().route("/health", get(|| async { "ok" }));
+    let devices = auth::DeviceStore::load(&cfg.devices_path);
+    let pc = pairing::PairingCode::generate();
+    let ip = config::tailnet_ipv4().unwrap_or_else(|| "127.0.0.1".into());
+    let payload = format!("awb://{ip}:{}?code={}", cfg.port, pc.code);
+    println!("=== 폰 페어링 QR (60초 유효) — 코드 {} ===", pc.code);
+    println!("{}", pairing::render_terminal(&payload));
+    pairing::save_png(&payload, &format!("{}/.claude/.awb-pair.png", std::env::var("HOME").unwrap_or_default()));
+    let state = routes::AppState {
+        devices,
+        pairing: std::sync::Arc::new(std::sync::Mutex::new(Some(pc))),
+        roots: routes::default_roots(),
+        power: power::PowerGuard::new(),
+    };
+    let app = routes::router(state);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
