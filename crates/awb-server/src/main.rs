@@ -5,6 +5,7 @@ mod pairing;
 mod power;
 mod routes;
 mod sessions;
+mod streamevt;
 
 #[tokio::main]
 async fn main() {
