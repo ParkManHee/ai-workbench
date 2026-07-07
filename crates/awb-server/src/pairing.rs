@@ -54,10 +54,13 @@ pub async fn pair_handler(
     Query(q): Query<PairQuery>,
 ) -> Result<Json<PairResult>, StatusCode> {
     let at = now();
-    let valid = { st.pairing.lock().unwrap().as_ref().map(|pc| pc.is_valid(&q.code, at)).unwrap_or(false) };
+    let valid = {
+        let mut guard = st.pairing.lock().unwrap();
+        let ok = guard.as_ref().map(|pc| pc.is_valid(&q.code, at)).unwrap_or(false);
+        if ok { *guard = None; }   // 원자적: 유효할 때만 즉시 소진(동시요청 재사용 차단)
+        ok
+    };
     if !valid { return Err(StatusCode::FORBIDDEN); }
-    // 1회성: 사용 후 코드 무효화
-    *st.pairing.lock().unwrap() = None;
     let token = random_token();
     let dev = st.devices.add(&token, "mobile");
     Ok(Json(PairResult { token, device_id: dev.id }))
