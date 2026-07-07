@@ -21,6 +21,7 @@ dependencies = [
 name = "ai-workbench"
 version = "0.1.0"
 dependencies = [
+ "awb-core",
  "libc",
  "serde",
  "serde_json",

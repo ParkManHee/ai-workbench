@@ -1,14 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod lock;
-mod paths;
-mod preflight;
-mod runner;
-mod runlog;
-mod scan;
-mod shell_env;
-mod worklog;
+use awb_core::{scan, preflight, worklog, runner, runlog};
 
 #[tauri::command]
 fn ping() -> String {
