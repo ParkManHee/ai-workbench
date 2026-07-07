@@ -2,6 +2,7 @@
 use std::sync::{Arc, Mutex};
 use crate::auth::DeviceStore;
 use crate::pairing::PairingCode;
+use axum::extract::Query;
 use axum::{extract::State, Json};
 use serde::Serialize;
 
@@ -29,6 +30,13 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
     Json(dtos)
 }
 
+#[derive(serde::Deserialize)]
+pub struct DiffQuery { pub path: String }
+
+pub async fn diff_handler(Query(q): Query<DiffQuery>) -> Json<crate::gitdiff::DiffSummary> {
+    Json(crate::gitdiff::summarize(&q.path))
+}
+
 pub fn default_roots() -> Vec<String> {
     match std::env::var("AWB_ROOTS") {
         Ok(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
@@ -39,11 +47,12 @@ pub fn default_roots() -> Vec<String> {
     }
 }
 
-// 이 태스크의 router(): /projects 만(인증 미적용 — Task 6에서 완성 라우터로 대체)
+// 이 태스크의 router(): /projects, /diff 만(인증 미적용 — Task 6에서 완성 라우터로 대체)
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::get;
     axum::Router::new()
         .route("/projects", get(projects_handler))
+        .route("/diff", get(diff_handler))
         .with_state(state)
 }
 

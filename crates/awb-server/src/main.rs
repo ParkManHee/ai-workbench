@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod gitdiff;
 mod pairing;
 mod routes;
 
