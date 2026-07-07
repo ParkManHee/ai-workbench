@@ -1,5 +1,7 @@
 mod auth;
 mod config;
+mod pairing;
+mod routes;
 
 use axum::{routing::get, Router};
 
