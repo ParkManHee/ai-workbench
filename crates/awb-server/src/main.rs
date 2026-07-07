@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod routes;
+mod sessions;
 
 #[tokio::main]
 async fn main() {
