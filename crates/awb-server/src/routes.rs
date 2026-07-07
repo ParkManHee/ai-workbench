@@ -98,7 +98,7 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
 
-/// 완성 라우터: `/pair`는 무인증, 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`)는 `require_token` 미들웨어 적용.
+/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{get, post};
     use axum::middleware::from_fn_with_state;
@@ -113,9 +113,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
-    // 무인증: /pair
+    // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
         .route("/pair", get(crate::pairing::pair_handler))
+        .route("/stream/{run_id}", get(crate::ws::stream_handler))
         .merge(protected)
         .with_state(state)
 }

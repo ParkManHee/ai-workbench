@@ -7,6 +7,7 @@ mod routes;
 mod runreg;
 mod sessions;
 mod streamevt;
+mod ws;
 
 #[tokio::main]
 async fn main() {
