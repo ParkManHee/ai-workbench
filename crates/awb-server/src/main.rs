@@ -32,14 +32,20 @@ async fn serve() {
     println!("=== 폰 페어링 QR (60초 유효) — 코드 {} ===", pc.code);
     println!("{}", pairing::render_terminal(&payload));
     pairing::save_png(&payload, &format!("{}/.claude/.awb-pair.png", std::env::var("HOME").unwrap_or_default()));
+    let roots = routes::default_roots();
+    // claude 실행 파일 경로 결정: awb-core preflight의 탐지 결과 우선(PATH+~/.local/bin 탐색),
+    // 없으면 AWB_CLAUDE_BIN 환경변수, 그마저 없으면 리터럴 "claude"(PATH 의존 최종 폴백).
+    let claude_bin = awb_core::preflight::run_preflight(&roots, None).claude_path
+        .or_else(|| std::env::var("AWB_CLAUDE_BIN").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "claude".into());
     let state = routes::AppState {
         devices,
         pairing: std::sync::Arc::new(std::sync::Mutex::new(Some(pc))),
-        roots: routes::default_roots(),
+        roots,
         power: power::PowerGuard::new(),
         sessions: sessions::SessionStore::load(&cfg.sessions_dir),
         runs: runreg::RunRegistry::new(),
-        claude_bin: cfg.claude_bin.clone(),
+        claude_bin,
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
