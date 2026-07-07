@@ -6,6 +6,14 @@ pub fn parse_session_id(line: &str) -> Option<String> {
     v.get("session_id")?.as_str().map(|s| s.to_string())
 }
 
+/// 로그 파일 전체를 읽어 session_id를 담은 첫 줄을 찾아 반환한다.
+/// WS가 붙어있지 않은(push-only) 완료 경로에서도 --resume용 세션을 캡처하기 위함
+/// (WS 루프의 라인 단위 parse_session_id 호출과 동일한 로직을 파일 전체에 대해 적용).
+pub fn capture_session_id_from_log(log_path: &str) -> Option<String> {
+    let content = fs::read_to_string(log_path).ok()?;
+    content.lines().find_map(parse_session_id)
+}
+
 #[derive(Clone)]
 pub struct SessionStore { pub dir: String }
 impl SessionStore {
@@ -34,6 +42,27 @@ mod tests {
         assert_eq!(parse_session_id(r#"{"type":"assistant","message":{}}"#), None);
         assert_eq!(parse_session_id("not json"), None);
     }
+    #[test]
+    fn capture_session_id_from_log_finds_init_line() {
+        let path = std::env::temp_dir().join("awb_capture_sid_test.log").to_string_lossy().to_string();
+        let content = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid-abc\",\"tools\":[]}\n",
+            "{\"type\":\"assistant\",\"message\":{}}\n",
+        );
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(capture_session_id_from_log(&path), Some("sid-abc".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn capture_session_id_from_log_none_when_absent() {
+        let path = std::env::temp_dir().join("awb_capture_sid_test_none.log").to_string_lossy().to_string();
+        let content = "{\"type\":\"assistant\",\"message\":{}}\nnot json\n";
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(capture_session_id_from_log(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn session_store_roundtrip() {
         let d = std::env::temp_dir().join("awb_sessions_test"); let _ = std::fs::remove_dir_all(&d);

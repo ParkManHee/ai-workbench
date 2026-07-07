@@ -90,10 +90,13 @@ async fn stream_loop(
                 verdict: status.verdict.clone(),
                 changed_files: status.changed_files,
             };
+            // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
+            // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.
+            // send 이전에 게이트를 닫아(mark_notified) 워처가 끼어들 여지를 없앤다.
+            st.runs.mark_notified(&run_id); // WS로 전달 예정 → 이후 푸시 스킵(게이트를 먼저 닫음)
             let _ = socket
                 .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
                 .await;
-            st.runs.mark_notified(&run_id); // WS로 전달됨 → 이후 푸시 스킵
             let _ = socket.send(Message::Close(None)).await; // 정상 종료 프레임(클라이언트 측 abnormal-closure 방지)
             break;
         }

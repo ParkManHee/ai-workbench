@@ -85,6 +85,11 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
             if chunk.done {
                 let status = awb_core::runlog::run_status(&meta.log, &meta.workdir);
+                // WS가 붙어있지 않은 push-only 완료 경로에서도 --resume용 session_id를 캡처한다.
+                // (WS 루프는 라인 단위로 파싱하지만, 여기선 WS가 없었을 수 있으므로 로그 전체를 읽어 찾는다.)
+                if let Some(sid) = crate::sessions::capture_session_id_from_log(&meta.log) {
+                    st.sessions.set(&meta.project, &sid);
+                }
                 if should_push(&st.runs, &run_id) {
                     let tokens = st.push.list();
                     let title = format!(
