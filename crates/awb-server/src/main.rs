@@ -3,6 +3,7 @@ mod config;
 mod gitdiff;
 mod pairing;
 mod power;
+mod push;
 mod routes;
 mod runreg;
 mod sessions;
@@ -41,6 +42,7 @@ async fn serve() {
         claude_bin: cfg.claude_bin.clone(),
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
+        push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
     };
     let app = routes::router(state);
     let listener = match tokio::net::TcpListener::bind(&addr).await {

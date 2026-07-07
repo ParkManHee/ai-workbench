@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::auth::DeviceStore;
 use crate::pairing::PairingCode;
 use crate::power::PowerGuard;
+use crate::push::PushStore;
 use crate::runreg::RunRegistry;
 use crate::sessions::SessionStore;
 use axum::extract::{Path, Query};
@@ -21,6 +22,7 @@ pub struct AppState {
     pub claude_bin: String,
     pub settings_path: String,
     pub runs_dir: String,
+    pub push: PushStore,
 }
 
 #[derive(Serialize)]
@@ -79,7 +81,7 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
         .map_err(|e| (StatusCode::CONFLICT, e))?;
     let run_id = h.log.rsplit('/').next().unwrap_or(&h.log).trim_end_matches(".log").to_string();
     st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
-    // 완료 워처(푸시) spawn — Task 7에서 push::spawn_watch 로 연결. 이 태스크에선 등록만.
+    crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
     Ok(Json(ChatResult { run_id, log: h.log }))
 }
 
@@ -98,7 +100,15 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
 
-/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`)는 `require_token` 미들웨어 적용.
+#[derive(serde::Deserialize)]
+pub struct PushRegisterBody { pub token: String }
+
+pub async fn push_register_handler(State(st): State<AppState>, Json(b): Json<PushRegisterBody>) -> StatusCode {
+    st.push.add(&b.token);
+    StatusCode::OK
+}
+
+/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`,`/push/register`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{get, post};
     use axum::middleware::from_fn_with_state;
@@ -112,6 +122,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/status/{run_id}", get(status_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
+        .route("/push/register", post(push_register_handler))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
@@ -142,6 +153,7 @@ mod tests {
             claude_bin: "claude".into(),
             settings_path: "/tmp/ws.json".into(),
             runs_dir: std::env::temp_dir().join("awb_routes_test_runs").to_string_lossy().to_string(),
+            push: crate::push::PushStore::load(&std::env::temp_dir().join("awb_routes_test_push.json").to_string_lossy().to_string()),
         }
     }
 
