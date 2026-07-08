@@ -68,7 +68,7 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String> }
 #[derive(Serialize)]
 pub struct ChatResult { pub run_id: String, pub log: String }
 
@@ -76,7 +76,8 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
     // 프로젝트 경로 확인
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
-    let resume = st.sessions.get(&project);
+    // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
+    let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
     let h = awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir)
         .map_err(|e| (StatusCode::CONFLICT, e))?;
     let run_id = h.log.rsplit('/').next().unwrap_or(&h.log).trim_end_matches(".log").to_string();
@@ -112,6 +113,23 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
 
+pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<crate::transcript::SessionInfo>>, StatusCode> {
+    let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(crate::transcript::list_sessions(&crate::transcript::project_slug(&proj.path))))
+}
+
+#[derive(serde::Deserialize)]
+pub struct TxQuery { #[serde(default)] pub from: usize }
+
+pub async fn transcript_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Query(q): Query<TxQuery>) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !crate::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    let slug = crate::transcript::project_slug(&proj.path);
+    let path = format!("{}/.claude/projects/{}/{}.jsonl", std::env::var("HOME").unwrap_or_default(), slug, session_id);
+    let (msgs, next, active) = crate::transcript::read_transcript(&path, q.from);
+    Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active })))
+}
+
 #[derive(serde::Deserialize)]
 pub struct PushRegisterBody { pub token: String }
 
@@ -120,7 +138,7 @@ pub async fn push_register_handler(State(st): State<AppState>, Json(b): Json<Pus
     StatusCode::OK
 }
 
-/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`,`/push/register`)는 `require_token` 미들웨어 적용.
+/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`,`/push/register`,`/sessions`,`/transcript`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{get, post};
     use axum::middleware::from_fn_with_state;
@@ -135,6 +153,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))
+        .route("/sessions/{project}", get(sessions_handler))
+        .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
