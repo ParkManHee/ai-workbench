@@ -198,82 +198,71 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
 
 ---
 
-### Task 2: 폰 — api/타입 확장 + vitest
+### Task 2: 데몬 /info(hostname) + 폰 멀티-PC store + api/타입 + vitest
 
-**Files:** Modify `mobile/src/lib/{api,types}.ts`; `mobile/src/lib/api.test.ts`.
+**Files:** Modify `crates/awb-server/src/routes.rs`(+`/info`); Create `mobile/src/store/pcs.ts`, Modify `mobile/src/lib/{api,types}.ts`, `mobile/src/lib/api.test.ts`, Create `mobile/src/lib/pcs-util.ts` + `mobile/src/lib/pcs-util.test.ts`.
 
 **Interfaces:**
-- `types.ts`: `SessionInfo { session_id, updated, preview, count, active }`, `TranscriptMsg { role, text, tools }`.
-- `api.ts`: `sessions(project): Promise<SessionInfo[]>` (`GET /sessions/:project`), `transcript(project, sessionId, from): Promise<{messages: TranscriptMsg[]; next: number; active: boolean}>` (`GET /transcript/:project/:sessionId?from=`), `chat(project, prompt, plan, resumeSessionId?)` — body에 `resume_session_id` 포함(있을 때).
+- 데몬 `GET /info` (require_token 뒤) → `{ hostname: String }`. hostname = `scutil --get ComputerName` 성공 시 그 값, 실패 시 `hostname` 명령, 최종 폴백 `"Mac"`.
+- 폰 `types.ts`: `PC { id: string; label: string; baseUrl: string; token: string }`, `SessionInfo { session_id, updated, preview, count, active }`, `TranscriptMsg { role, text, tools }`.
+- 폰 `pcs-util.ts`(순수, 테스트 대상): `upsertPC(list, pc)` — 같은 baseUrl이면 교체(중복 방지), 아니면 추가; `pcId(baseUrl)` — baseUrl 기반 안정적 id.
+- 폰 `pcs.ts`(SecureStore 래퍼): `loadPCs(): Promise<PC[]>`, `savePCs(list)`, `addPC(pc)`(upsert), `removePC(id)`, `getPC(id): Promise<PC|null>`. JSON 배열 저장(키 `awb_pcs`).
+- 폰 `api.ts`: `info()`, `sessions(project)`, `transcript(project, sessionId, from)`, `chat(project, prompt, plan, resumeSessionId?)` (resume 시 body에 `resume_session_id`).
 
-- [ ] **Step 1: 실패 테스트 (api.test.ts)**
-```ts
-it("sessions/transcript/chat-resume URLs", async () => {
-  const calls: any[] = [];
-  const f = async (u: string, init?: any) => { calls.push([u, init]); return { ok: true, json: async () => ([]) }; };
-  const c = makeClient("http://1.2.3.4:8787", "tok", f as any);
-  await c.sessions("demo"); expect(calls[0][0]).toBe("http://1.2.3.4:8787/sessions/demo");
-  await c.transcript("demo", "s1", 5); expect(calls[1][0]).toBe("http://1.2.3.4:8787/transcript/demo/s1?from=5");
-  const f2calls: any[] = [];
-  const f2 = async (u: string, init: any) => { f2calls.push([u, init]); return { ok: true, json: async () => ({ run_id: "r", log: "l" }) }; };
-  const c2 = makeClient("http://1.2.3.4:8787", "tok", f2 as any);
-  await c2.chat("demo", "hi", false, "sess-9");
-  expect(JSON.parse(f2calls[0][1].body)).toEqual({ prompt: "hi", plan: false, resume_session_id: "sess-9" });
-});
-```
-
-- [ ] **Step 2: 실패 확인** — `cd mobile && npx vitest run` → FAIL.
-
-- [ ] **Step 3: 구현** — `api.ts`에 추가:
-```ts
-sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
-transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
-  jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
-```
-`chat`에 4번째 인자 `resumeSessionId?: string` 추가 → body에 `...(resumeSessionId ? { resume_session_id: resumeSessionId } : {})`. `types.ts`에 SessionInfo/TranscriptMsg 추가.
-
-- [ ] **Step 4: 통과 확인** — `npx vitest run` → PASS. `npx tsc --noEmit` → 0.
-
-- [ ] **Step 5: 커밋** — `... -m "feat(mobile): api sessions/transcript + chat resume 옵션"` (+트레일러)
+- [ ] **Step 1: 데몬 /info** — routes.rs에 `info_handler`(hostname) + 인증군 라우트 `.route("/info", get(info_handler))`. `cargo test --workspace` green 유지, `cargo build -p awb-server` 성공.
+- [ ] **Step 2: 폰 실패 테스트** — `pcs-util.test.ts`(upsert 중복 baseUrl 교체·신규 추가, pcId 안정성) + `api.test.ts`에 sessions/transcript/chat-resume URL·body 검증 추가. `cd mobile && npx vitest run` → FAIL.
+- [ ] **Step 3: 폰 구현** — types/pcs-util/pcs/api 작성. `pcs-util`은 RN/Expo import 없이 순수. `pcs.ts`만 expo-secure-store 사용.
+- [ ] **Step 4: 통과 확인** — `npx vitest run` PASS, `npx tsc --noEmit` 0.
+- [ ] **Step 5: 커밋** — `... -m "feat: 데몬 /info(hostname) + 폰 멀티-PC store + api sessions/transcript/resume"` (+트레일러)
 
 ---
 
-### Task 3: 폰 — 세션 목록 화면 + 프로젝트 진입 흐름 변경
+### Task 3: 폰 — PC 목록 화면(진입) + 페어링이 PC 추가 + 프로젝트 화면 PC 스코프화
 
-**Files:** Create `mobile/app/sessions/[project].tsx`; Modify `mobile/app/index.tsx`(프로젝트 탭 → sessions로), `mobile/app/_layout.tsx`(타이틀).
+**Files:** Modify `mobile/app/index.tsx`(→ PC 목록), Create `mobile/app/projects.tsx`(기존 프로젝트 목록 이전, pc 스코프), Modify `mobile/app/pair.tsx`(PC 추가), `mobile/app/_layout.tsx`(타이틀·초기 라우팅).
 
-**Interfaces:** Consumes `makeClient().sessions()`, `loadSession`. Produces: 세션 목록 화면 — 상단 **[+ 새 대화]**(→ chat/[project] resume 없이), 아래 세션 리스트(preview·updated·🟢활성 배지), 탭 → `chat/[project]?session=<id>`.
+**Interfaces:** 네비 계층: `index`(PC 목록) → `projects?pc=<id>` → `sessions/[project]?pc=<id>` → `chat/[project]?pc=<id>&session=<id>`. 각 화면은 `getPC(pc)`로 baseUrl/token 획득(단일 loadSession 대체).
 
-- [ ] **Step 1: index 진입 변경** — `index.tsx`의 `handlePress`가 `sessions/[project]`로 이동하도록:
-```tsx
-router.push({ pathname: "/sessions/[project]", params: { project: project.name, path: project.path } });
-```
-- [ ] **Step 2: sessions/[project].tsx 구현** — 마운트 시 loadSession 가드 → `client.sessions(project)` 로드 → FlatList. 헤더에 "새 대화" 버튼(→ `chat/[project]` with params project,path, session 없음). 각 세션 탭 → `chat/[project]` with params {project, path, session: session_id}. active면 🟢. 에러/로딩/빈목록 처리. 토큰 미로깅.
-- [ ] **Step 3: _layout에 세션 화면 타이틀** — `<Stack.Screen name="sessions/[project]" options={{ title: "세션" }} />` (chat처럼 화면에서 프로젝트명으로 덮어써도 됨).
-- [ ] **Step 4: 검증** — `cd mobile && npx tsc --noEmit` → 0; `npx vitest run` → 유지.
-- [ ] **Step 5: 커밋** — `... -m "feat(mobile): 세션 목록 화면 + 프로젝트→세션 진입"` (+트레일러)
+- [ ] **Step 1: index = PC 목록** — 마운트 시 `loadPCs()`. 비면 `/pair`로. 목록: 각 PC(label·baseUrl 호스트) 탭 → `router.push({ pathname: "/projects", params: { pc: pc.id } })`. 상단 **[+ PC 추가]** → `/pair`. 각 PC 길게눌러 삭제(removePC).
+- [ ] **Step 2: projects.tsx** — 기존 index의 프로젝트 목록 로직 이전. `useLocalSearchParams<{pc:string}>()` → `getPC(pc)` → `makeClient(baseUrl,token).projects()/preflight()`. 프로젝트 탭 → `sessions/[project]?pc=<id>&path=<path>`. 401 시 그 PC removePC 후 index로.
+- [ ] **Step 3: pair.tsx PC 추가** — 페어링 성공 후 `client.info()`로 hostname 취득 → `addPC({ id: pcId(baseUrl), label: hostname, baseUrl, token })` → `router.replace("/")`(PC 목록). (loadSession/saveSession 단일 저장 제거.)
+- [ ] **Step 4: _layout** — 초기 라우팅을 loadPCs 기준으로(없으면 pair). 화면 타이틀: index "PC", projects는 화면에서 PC label로 설정. push 알림 등록은 첫 PC 기준(있으면).
+- [ ] **Step 5: 검증** — `npx tsc --noEmit` 0, `npx vitest run` 유지.
+- [ ] **Step 6: 커밋** — `... -m "feat(mobile): PC 목록 진입 + 페어링 PC 추가 + 프로젝트 화면 PC 스코프"` (+트레일러)
 
 ---
 
-### Task 4: 폰 — 채팅에 세션 이어받기 + 트랜스크립트 로드 + 활성 실시간 + PC resume 안내
+### Task 4: 폰 — 세션 목록 화면(PC+프로젝트 스코프)
+
+**Files:** Create `mobile/app/sessions/[project].tsx`; Modify `_layout.tsx`(타이틀).
+
+**Interfaces:** `useLocalSearchParams<{project, pc, path}>()` → `getPC(pc)` → `makeClient(...).sessions(project)`. 상단 **[+ 새 대화]**(→ `chat/[project]?pc&path`, session 없음), 세션 리스트(preview·updated·🟢active) 탭 → `chat/[project]?pc&path&session=<id>`.
+
+- [ ] **Step 1: sessions/[project].tsx** — loadPCs/getPC 가드 → sessions 로드 → FlatList(빈목록·로딩·에러·재시도). 토큰 미로깅.
+- [ ] **Step 2: _layout 타이틀** — `sessions/[project]` 등록(프로젝트명은 화면에서).
+- [ ] **Step 3: 검증** — `npx tsc --noEmit` 0.
+- [ ] **Step 4: 커밋** — `... -m "feat(mobile): 세션 목록 화면(PC+프로젝트 스코프)"` (+트레일러)
+
+---
+
+### Task 5: 폰 — 채팅 세션 이어받기 + 트랜스크립트 로드 + 활성 실시간 + PC resume 안내
 
 **Files:** Modify `mobile/app/chat/[project].tsx`.
 
-**Interfaces:** `useLocalSearchParams`에서 `session?: string` 수신. 있으면: 마운트 시 `client.transcript(project, session, 0)`로 과거 메시지를 chat state에 로드(TranscriptMsg→ChatMsg). 활성(active)이면 ~2s 폴로 `from=next`부터 증분 로드해 최신 반영. 전송 시 `client.chat(project, text, plan, session)`으로 그 세션 resume. 화면에 **[PC에서 이어받기]** 버튼 → `cd <path> && claude --resume <session>` 문자열을 표시(복사 가능, Clipboard). session 없으면 기존처럼 새 대화.
+**Interfaces:** params `{project, pc, path, session?}`. `getPC(pc)`로 client 구성(기존 loadSession 대체). session 있으면 마운트 시 `transcript(project, session, 0)` 로드→chat 메시지 초기화(TranscriptMsg→ChatMsg); active면 ~2s 폴로 `from=next` 증분 append. 전송 시 `chat(project, text, plan, session)`. **[PC에서 이어받기]** → `expo-clipboard`로 `cd <path> && claude --resume <session>` 복사. session 없으면 새 대화(기존 동작).
 
-- [ ] **Step 1: 트랜스크립트 로드** — session 파라미터 있으면 마운트 useEffect에서 transcript 로드 → `setChat(s => ({ ...s, messages: msgs.map(m => ({ role: m.role, text: m.text, tools: m.tools })) }))`. `nextLine` ref 저장.
-- [ ] **Step 2: 활성 실시간 폴** — active면 setInterval(2s)로 `transcript(project, session, nextLine)` → 새 메시지 append + nextLine 갱신. 화면 벗어나면/비활성 되면 정리.
-- [ ] **Step 3: 전송 시 resume** — `handleSend`의 `client.chat(project, text, plan)` → `client.chat(project, text, plan, session)` (session 있으면 그 세션 이어감).
-- [ ] **Step 4: PC 이어받기 안내** — 상단 또는 메뉴에 버튼 → `expo-clipboard`로 `cd <path> && claude --resume <session>` 복사 + 토스트/알림. (session 있을 때만 노출.)
-- [ ] **Step 5: 검증** — `npx tsc --noEmit` → 0; `npx vitest run` 유지. 실기기 스모크(라이브 리로드): PC 세션 폰에서 열기→과거 대화 보임→이어하기→PC resume 명령 표시.
-- [ ] **Step 6: 커밋** — `... -m "feat(mobile): 채팅 세션 이어받기(트랜스크립트 로드+활성 실시간+resume)+PC resume 안내"` (+트레일러)
+- [ ] **Step 1: PC 스코프화** — 기존 `loadSession()`을 `getPC(pc)`로 교체(baseUrl/token). 없으면 index로.
+- [ ] **Step 2: 트랜스크립트 로드+활성 폴** — session 있으면 마운트 로드 + active 폴(정리 포함). nextLine ref.
+- [ ] **Step 3: 전송 resume** — handleSend가 session 전달.
+- [ ] **Step 4: PC 이어받기 안내** — expo-clipboard(설치: `npx expo install expo-clipboard`) 버튼(session 있을 때). ※ 순수 JS 모듈이면 재빌드 불필요, 네이티브면 재빌드(USB) 필요 — 구현자 확인 후 필요시 보고.
+- [ ] **Step 5: 검증** — `npx tsc --noEmit` 0, `npx vitest run` 유지. 실기기 스모크(라이브 리로드): PC 세션 폰서 열기→과거 대화→이어하기→PC resume 명령.
+- [ ] **Step 6: 커밋** — `... -m "feat(mobile): 채팅 세션 이어받기+활성 실시간+PC resume 안내"` (+트레일러)
 
 ---
 
-## Plan 4 Self-Review
-- **Spec coverage:** 과거 대화 보기=Task1(트랜스크립트)+Task4(로드/렌더); 세션 목록=Task1(/sessions)+Task3; 이어받기(resume)=Task1(/chat resume)+Task4; 활성 실시간 보기=Task1(active+from offset)+Task4(폴); PC 이어받기 안내=Task4. 무봉제 핸드오프 모델 반영(읽기+resume, 동시조종 배제).
-- **Placeholder scan:** 데몬/파서/테스트 실제 코드. 폰 UI는 동작·API 배선 명시(UI는 typecheck+리뷰, 실동작은 라이브리로드 스모크).
-- **Type consistency:** SessionInfo/TranscriptMsg 데몬↔폰 필드 일치; `from`(라인 offset) 데몬(read_transcript)↔api(transcript)↔chat 화면 일관; chat resume_session_id 데몬 ChatBody↔api chat↔화면 param.
-- **위험:** (1) 슬러그 규약이 Claude 버전에 따라 다를 수 있음 → 실기기에서 실제 디렉토리와 대조(구현자 확인). (2) 동시 resume 충돌은 모델상 배제(핸드오프)지만, 활성 세션 resume 시 사용자에게 "PC에서 진행 중일 수 있음" 경고는 후속. (3) 큰 트랜스크립트 성능 — v1은 라인 기반 증분, 대용량 페이지네이션은 후속.
+## Plan 4 Self-Review (멀티-PC 반영)
+- **Spec coverage:** 세션 목록/트랜스크립트/resume=Task1(데몬)+Task2(api)+Task4/5(폰); **멀티-PC 그룹화**=데몬 /info(Task2)+폰 멀티-PC store(Task2)+PC 목록 진입/페어링 추가(Task3); 활성 실시간·PC resume 안내=Task5. 무봉제 핸드오프 모델 유지.
+- **Type consistency:** `PC{id,label,baseUrl,token}` Task2↔3↔4↔5; `SessionInfo`/`TranscriptMsg` 데몬↔폰; 모든 화면이 `pc` 파라미터→getPC로 client 구성(단일 loadSession 제거) 일관.
+- **위험:** (1) 네비 재구성(단일→PC계층)이 Plan3 화면(index/chat)을 개편 — 기존 기능 회귀 없게 projects/chat 로직 보존 이전. (2) expo-clipboard 네이티브 여부에 따라 재빌드 필요 가능(Task5서 확인). (3) 슬러그 규약 실기기 대조(Task1 위험 유지).
 
-## 후속(v2): 활성 세션 동시 진행 경고/락 표시, 대용량 트랜스크립트 페이지네이션, 슬러그 규약 자동 검출, thinking 블록 접기, 세션 검색/이름.
+## 후속(v2): 활성 세션 동시 진행 경고/락, 대용량 트랜스크립트 페이지네이션, PC label 편집, 세션 검색/이름, thinking 블록 접기.
