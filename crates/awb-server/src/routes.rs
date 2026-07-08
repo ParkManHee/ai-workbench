@@ -113,6 +113,33 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
 
+#[derive(Serialize)]
+pub struct InfoDto { pub hostname: String }
+
+/// macOS 친숙한 이름(`scutil --get ComputerName`) → 실패 시 `hostname` 명령 → 최종 폴백 `"Mac"`.
+/// 폰이 여러 PC를 페어링했을 때 목록에 표시할 라벨로 사용한다.
+pub fn resolve_hostname() -> String {
+    let scutil = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output();
+    if let Ok(o) = scutil {
+        if o.status.success() {
+            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !name.is_empty() { return name; }
+        }
+    }
+    let hostname = std::process::Command::new("hostname").output();
+    if let Ok(o) = hostname {
+        if o.status.success() {
+            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !name.is_empty() { return name; }
+        }
+    }
+    "Mac".to_string()
+}
+
+pub async fn info_handler() -> Json<InfoDto> {
+    Json(InfoDto { hostname: resolve_hostname() })
+}
+
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<crate::transcript::SessionInfo>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(crate::transcript::list_sessions(&crate::transcript::project_slug(&proj.path))))
@@ -138,7 +165,7 @@ pub async fn push_register_handler(State(st): State<AppState>, Json(b): Json<Pus
     StatusCode::OK
 }
 
-/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`,`/push/register`,`/sessions`,`/transcript`)는 `require_token` 미들웨어 적용.
+/// 완성 라우터: `/pair`,`/stream/:run_id`는 무인증(자체 토큰검증), 나머지(`/health`,`/projects`,`/diff`,`/awake`,`/chat`,`/status`,`/cancel`,`/preflight`,`/push/register`,`/sessions`,`/transcript`,`/info`)는 `require_token` 미들웨어 적용.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{get, post};
     use axum::middleware::from_fn_with_state;
@@ -155,6 +182,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/push/register", post(push_register_handler))
         .route("/sessions/{project}", get(sessions_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
+        .route("/info", get(info_handler))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
@@ -263,6 +291,29 @@ mod tests {
         let content = std::fs::read_to_string(&done_path).unwrap();
         assert_eq!(content, "0");
         let _ = std::fs::remove_file(&done_path);
+    }
+
+    #[test]
+    fn resolve_hostname_is_non_empty() {
+        // 환경별로 scutil/hostname 가용성이 다르므로(리눅스 CI 등) 값 자체보다 "항상 뭔가 반환"만 검증한다.
+        let name = resolve_hostname();
+        assert!(!name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn info_requires_auth_and_returns_hostname() {
+        let devices_path = tmp("awb_routes_devices_info.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        let token = "tok-info-ok";
+        state.devices.add(token, "test-device");
+        let app = crate::routes::router(state);
+        let unauth = app.clone().oneshot(Request::builder().uri("/info").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        let res = app.oneshot(Request::builder().uri("/info").header("authorization", format!("Bearer {token}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["hostname"].as_str().unwrap().len() > 0);
     }
 
     #[tokio::test]

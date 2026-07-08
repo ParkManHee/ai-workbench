@@ -1,4 +1,4 @@
-import type { Project, Preflight } from "./types";
+import type { Project, Preflight, SessionInfo, TranscriptMsg } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -28,8 +28,14 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     preflight: (): Promise<Preflight> => jget("/preflight"),
     diff: (path: string) => jget(`/diff?path=${encodeURIComponent(path)}`),
     status: (runId: string) => jget(`/status/${runId}`),
-    chat: async (project: string, prompt: string, plan: boolean) => {
-      const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ prompt, plan }) } as any);
+    info: (): Promise<{ hostname: string }> => jget("/info"),
+    sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
+    transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
+      jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string) => {
+      const body: Record<string, unknown> = { prompt, plan };
+      if (resumeSessionId) body.resume_session_id = resumeSessionId;
+      const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);
       return (r as any).json() as Promise<{ run_id: string; log: string }>;
     },
