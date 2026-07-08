@@ -16,23 +16,35 @@ fn projects_root() -> String { format!("{}/.claude/projects", home()) }
 #[derive(Serialize, Clone)]
 pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool }
 #[derive(Serialize, Clone)]
-pub struct TranscriptMsg { pub role: String, pub text: String, pub tools: Vec<String> }
+pub struct TranscriptMsg { pub role: String, pub text: String, pub tools: Vec<String>, pub tool_details: Vec<String> }
 
-fn parse_content(v: &Value) -> (String, Vec<String>) {
+/// UTF-8 안전 절단(문자 기준) — 바이트 슬라이스는 멀티바이트 경계에서 패닉.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars { return s.to_string(); }
+    let t: String = s.chars().take(max_chars).collect();
+    format!("{t}…")
+}
+
+fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>) {
     match v {
-        Value::String(s) => (s.clone(), vec![]),
+        Value::String(s) => (s.clone(), vec![], vec![]),
         Value::Array(arr) => {
-            let mut text = String::new(); let mut tools = vec![];
+            let mut text = String::new(); let mut tools = vec![]; let mut details = vec![];
             for it in arr {
                 match it.get("type").and_then(|t| t.as_str()) {
                     Some("text") => if let Some(t) = it.get("text").and_then(|x| x.as_str()) { text.push_str(t); },
-                    Some("tool_use") => if let Some(n) = it.get("name").and_then(|x| x.as_str()) { tools.push(n.to_string()); },
+                    Some("tool_use") => if let Some(n) = it.get("name").and_then(|x| x.as_str()) {
+                        tools.push(n.to_string());
+                        // 상세(입력 요약): 앱에서 "작업" 버튼 펼침 시 표시
+                        let d = it.get("input").map(|i| truncate_chars(&i.to_string(), 300)).unwrap_or_default();
+                        details.push(if d.is_empty() { n.to_string() } else { format!("{n}: {d}") });
+                    },
                     _ => {}
                 }
             }
-            (text, tools)
+            (text, tools, details)
         }
-        _ => (String::new(), vec![]),
+        _ => (String::new(), vec![], vec![]),
     }
 }
 
@@ -45,9 +57,9 @@ pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usi
         match v.get("type").and_then(|t| t.as_str()) {
             Some(r @ ("user" | "assistant")) => {
                 if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
-                    let (text, tools) = parse_content(c);
+                    let (text, tools, tool_details) = parse_content(c);
                     if !text.is_empty() || !tools.is_empty() {
-                        msgs.push(TranscriptMsg { role: r.to_string(), text, tools });
+                        msgs.push(TranscriptMsg { role: r.to_string(), text, tools, tool_details });
                     }
                 }
             }
@@ -108,6 +120,7 @@ mod tests {
         assert_eq!(msgs[0].role, "user"); assert_eq!(msgs[0].text, "안녕");
         assert_eq!(msgs[1].role, "assistant"); assert_eq!(msgs[1].text, "반가워");
         assert_eq!(msgs[1].tools, vec!["Bash".to_string()]);
+        assert_eq!(msgs[1].tool_details, vec!["Bash".to_string()]); // input 없으면 이름만
         assert_eq!(next, 3); // 3 lines consumed
     }
 }

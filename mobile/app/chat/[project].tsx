@@ -18,7 +18,7 @@ import { getPC, removePC } from "../../src/store/pcs";
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
-  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools };
+  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details };
 }
 
 interface DiffEntry {
@@ -53,6 +53,16 @@ export default function Chat() {
   const [plan, setPlan] = useState(false);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // 툴(Edit/Bash 등) 상세는 기본 접힘 — "🔧 작업 N" 버튼 탭 시에만 펼침(메시지 index 기준)
+  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
+  function toggleTools(i: number) {
+    setExpandedTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
 
   const wsRef = useRef<WebSocket | null>(null);
   const runIdRef = useRef<string | null>(null);
@@ -290,20 +300,52 @@ export default function Chat() {
           didInitialScrollRef.current = true;
         }}
       >
-        {chat.messages.map((m, i) => (
-          <View key={i} style={m.role === "user" ? styles.userBubble : styles.assistantBubble}>
-            {m.role === "assistant" && m.tools && m.tools.length > 0 ? (
-              <View style={styles.chipRow}>
-                {m.tools.map((t, ti) => (
-                  <View key={ti} style={styles.chip}>
-                    <Text style={styles.chipText}>{t}</Text>
-                  </View>
-                ))}
+        {chat.messages.map((m, i) => {
+          const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
+          const hasText = m.text.trim().length > 0;
+          const isOpen = expandedTools.has(i);
+          const details = m.toolDetails && m.toolDetails.length > 0 ? m.toolDetails : m.tools ?? [];
+          // 툴만 있는 항목(답변 텍스트 없음): 말풍선 대신 작은 접힘 버튼만
+          if (m.role === "assistant" && hasTools && !hasText) {
+            return (
+              <View key={i} style={styles.toolOnlyRow}>
+                <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
+                  <Text style={styles.toolButtonText}>
+                    🔧 작업 {m.tools!.length} {isOpen ? "▲" : "▼"}
+                  </Text>
+                </Pressable>
+                {isOpen
+                  ? details.map((d, di) => (
+                      <Text key={di} style={styles.toolDetail} selectable>
+                        {d}
+                      </Text>
+                    ))
+                  : null}
               </View>
-            ) : null}
-            <Text style={m.role === "user" ? styles.userText : styles.assistantText}>{m.text}</Text>
-          </View>
-        ))}
+            );
+          }
+          return (
+            <View key={i} style={m.role === "user" ? styles.userBubble : styles.assistantBubble}>
+              {hasTools ? (
+                <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
+                  <Text style={styles.toolButtonText}>
+                    🔧 작업 {m.tools!.length} {isOpen ? "▲" : "▼"}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {hasTools && isOpen
+                ? details.map((d, di) => (
+                    <Text key={di} style={styles.toolDetail} selectable>
+                      {d}
+                    </Text>
+                  ))
+                : null}
+              {hasText ? (
+                <Text style={m.role === "user" ? styles.userText : styles.assistantText}>{m.text}</Text>
+              ) : null}
+            </View>
+          );
+        })}
 
         {!chat.running && chat.verdict ? (
           <View style={styles.verdictRow}>
@@ -419,21 +461,32 @@ const styles = StyleSheet.create({
   assistantText: {
     fontSize: 15,
   },
-  chipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 4,
+  toolOnlyRow: {
+    alignSelf: "flex-start",
+    maxWidth: "85%",
+    marginVertical: 2,
+  },
+  toolButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "#e6e6e6",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     marginBottom: 4,
   },
-  chip: {
-    backgroundColor: "#dedede",
-    borderRadius: 8,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  chipText: {
+  toolButtonText: {
     fontSize: 11,
-    color: "#333",
+    color: "#555",
+  },
+  toolDetail: {
+    fontSize: 11,
+    color: "#444",
+    fontFamily: "monospace",
+    backgroundColor: "#f2f2f2",
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    marginBottom: 3,
   },
   verdictRow: {
     alignItems: "center",
