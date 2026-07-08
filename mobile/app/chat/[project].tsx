@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
@@ -181,7 +181,7 @@ export default function Chat() {
   const running = chat.running;
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior="padding">
+    <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
       <ScrollView
         ref={scrollRef}
@@ -229,8 +229,9 @@ export default function Chat() {
 
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
-      <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
-        <View style={styles.planRow}>
+      <KeyboardStickyView>
+        <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
+          <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch value={plan} onValueChange={setPlan} disabled={running} />
         </View>
@@ -255,8 +256,9 @@ export default function Chat() {
             <Text style={styles.buttonText}>전송</Text>
           </Pressable>
         )}
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+      </KeyboardStickyView>
+    </View>
   );
 }
 
