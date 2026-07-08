@@ -10,9 +10,9 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
-import { makeClient } from "../src/lib/api";
+import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { Preflight, Project } from "../src/lib/types";
-import { loadSession, type Session } from "../src/store/session";
+import { clearSession, loadSession, type Session } from "../src/store/session";
 
 function badgeText(project: Project): string | null {
   const b = project.badge;
@@ -48,7 +48,13 @@ export default function Index() {
       ]);
       setProjects(projectList);
       setPreflight(preflightResult);
-    } catch {
+    } catch (e) {
+      if (isUnauthorized(e)) {
+        // Token revoked/invalid → drop it and send the user back to pairing.
+        await clearSession();
+        router.replace("/pair");
+        return;
+      }
       setError("Failed to load projects. Please try again.");
     } finally {
       if (isRefresh) setRefreshing(false);

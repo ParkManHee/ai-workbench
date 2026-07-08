@@ -11,10 +11,10 @@ import {
   View,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
-import { makeClient, streamUrl } from "../../src/lib/api";
+import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import type { ChatMsg, ChatState, WsEvent } from "../../src/lib/types";
-import { loadSession, type Session } from "../../src/store/session";
+import { clearSession, loadSession, type Session } from "../../src/store/session";
 
 interface DiffEntry {
   path: string;
@@ -99,7 +99,14 @@ export default function Chat() {
       if (doneRef.current) return;
       if (!reconnectedRef.current) {
         // v1 simplification: one reconnect attempt, offset=0 replay is acceptable.
+        // Drop the partial assistant bubble first so the replayed tokens rebuild
+        // it cleanly instead of doubling onto the text already shown.
         reconnectedRef.current = true;
+        setChat((prev) => {
+          const msgs = [...prev.messages];
+          if (msgs.at(-1)?.role === "assistant") msgs.pop();
+          return { ...initialChatState(), messages: msgs };
+        });
         connectWs(runId, s);
         return;
       }
@@ -139,7 +146,13 @@ export default function Chat() {
       const { run_id } = await client.chat(project, text, plan);
       runIdRef.current = run_id;
       connectWs(run_id, session);
-    } catch {
+    } catch (e) {
+      if (isUnauthorized(e)) {
+        // Token revoked/invalid → drop it and send the user back to pairing.
+        await clearSession();
+        router.replace("/pair");
+        return;
+      }
       setSendError("전송 실패. 다시 시도해주세요.");
       setChat((prev) => ({ ...prev, running: false }));
     }
