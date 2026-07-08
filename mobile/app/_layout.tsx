@@ -4,9 +4,10 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import * as Notifications from "expo-notifications";
 import { makeClient } from "../src/lib/api";
-import { loadSession, type Session } from "../src/store/session";
+import type { PC } from "../src/lib/types";
+import { loadPCs } from "../src/store/pcs";
 
-async function registerPush(session: Session): Promise<void> {
+async function registerPush(pc: PC): Promise<void> {
   // Push is an optional convenience (completion notifications); any failure
   // here (no FCM credentials in dev, permission denied, network error, ...)
   // must never crash or block the app.
@@ -14,7 +15,7 @@ async function registerPush(session: Session): Promise<void> {
     const perm = await Notifications.requestPermissionsAsync();
     if (!perm.granted) return;
     const expoToken = await Notifications.getExpoPushTokenAsync();
-    await makeClient(session.baseUrl, session.token).registerPush(expoToken.data);
+    await makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data);
   } catch {
     // ignore
   }
@@ -22,12 +23,13 @@ async function registerPush(session: Session): Promise<void> {
 
 export default function RootLayout() {
   useEffect(() => {
-    loadSession().then((session) => {
-      if (!session) {
+    loadPCs().then((pcs) => {
+      if (pcs.length === 0) {
         router.replace("/pair");
         return;
       }
-      registerPush(session);
+      // Best-effort: register push for the first PC only (v1 simplification).
+      registerPush(pcs[0]);
     });
   }, []);
 
@@ -35,7 +37,9 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <KeyboardProvider>
         <Stack>
-          <Stack.Screen name="index" options={{ title: "AI Workbench" }} />
+          <Stack.Screen name="index" options={{ title: "PC" }} />
+          {/* projects 타이틀은 화면에서 PC label로 동적 설정 */}
+          <Stack.Screen name="projects" options={{ title: "프로젝트" }} />
           <Stack.Screen name="pair" options={{ title: "페어링" }} />
           {/* chat/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
           <Stack.Screen name="chat/[project]" options={{ title: "실행" }} />

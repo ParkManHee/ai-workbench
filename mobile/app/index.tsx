@@ -1,145 +1,84 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Button,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { router } from "expo-router";
+import { useCallback, useState } from "react";
+import { Alert, Button, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { isUnauthorized, makeClient } from "../src/lib/api";
-import type { Preflight, Project } from "../src/lib/types";
-import { clearSession, loadSession, type Session } from "../src/store/session";
+import type { PC } from "../src/lib/types";
+import { loadPCs, removePC } from "../src/store/pcs";
 
-function badgeText(project: Project): string | null {
-  const b = project.badge;
-  if (!b) return null;
-  return `⬜${b.todo} 🔄${b.doing} ✅${b.done}`;
-}
-
-function preflightText(preflight: Preflight | null): string {
-  if (!preflight) return "";
-  if (preflight.claude_path) return "✅ Claude ready";
-  const failing = preflight.checks.find((c) => !c.ok);
-  return failing ? `⚠️ Not ready: ${failing.detail}` : "⚠️ Claude path not resolved";
+function hostOf(baseUrl: string): string {
+  return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
 }
 
 export default function Index() {
   const insets = useSafeAreaInsets();
-  // undefined = not checked yet, null = checked and no session (redirecting)
-  const [session, setSession] = useState<Session | null | undefined>(undefined);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [preflight, setPreflight] = useState<Preflight | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // undefined = not checked yet, null = checked and empty (redirecting)
+  const [pcs, setPcs] = useState<PC[] | null | undefined>(undefined);
 
-  const load = useCallback(async (s: Session, isRefresh: boolean) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const client = makeClient(s.baseUrl, s.token);
-      const [projectList, preflightResult] = await Promise.all([
-        client.projects(),
-        client.preflight(),
-      ]);
-      setProjects(projectList);
-      setPreflight(preflightResult);
-    } catch (e) {
-      if (isUnauthorized(e)) {
-        // Token revoked/invalid → drop it and send the user back to pairing.
-        await clearSession();
-        router.replace("/pair");
-        return;
-      }
-      setError("Failed to load projects. Please try again.");
-    } finally {
-      if (isRefresh) setRefreshing(false);
-      else setLoading(false);
+  const refresh = useCallback(async () => {
+    const list = await loadPCs();
+    if (list.length === 0) {
+      setPcs(null);
+      router.replace("/pair");
+      return;
     }
+    setPcs(list);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadSession().then((s) => {
-      if (cancelled) return;
-      if (!s) {
-        setSession(null);
-        router.replace("/pair");
-        return;
-      }
-      setSession(s);
-      load(s, false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+  // Re-check whenever this screen regains focus (e.g. back from /pair after
+  // adding a PC, or after deleting one) so the list is always current.
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh])
+  );
 
-  // Session not checked yet, or no session (redirect in flight): render nothing.
-  if (!session) {
+  function handlePress(pc: PC) {
+    router.push({ pathname: "/projects", params: { pc: pc.id } });
+  }
+
+  function handleLongPress(pc: PC) {
+    Alert.alert("PC 삭제", `"${pc.label}"을(를) 목록에서 삭제할까요?`, [
+      { text: "취소", style: "cancel" },
+      {
+        text: "삭제",
+        style: "destructive",
+        onPress: async () => {
+          await removePC(pc.id);
+          refresh();
+        },
+      },
+    ]);
+  }
+
+  if (!pcs) {
     return <View style={styles.container} />;
-  }
-
-  function handleRetry() {
-    if (session) load(session, false);
-  }
-
-  function handleRefresh() {
-    if (session) load(session, true);
-  }
-
-  function handlePress(project: Project) {
-    router.push({
-      pathname: "/chat/[project]",
-      params: { project: project.name, path: project.path },
-    });
   }
 
   return (
     <View style={styles.container}>
-      {preflight ? (
-        <View style={styles.preflightBanner}>
-          <Text style={styles.preflightText}>{preflightText(preflight)}</Text>
-        </View>
-      ) : null}
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator />
-        </View>
-      ) : error ? (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>{error}</Text>
-          <Button title="Retry" onPress={handleRetry} />
-        </View>
-      ) : (
-        <FlatList
-          data={projects}
-          keyExtractor={(item) => item.name}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
-          ListEmptyComponent={
-            <View style={styles.center}>
-              <Text>No projects found.</Text>
-            </View>
-          }
-          renderItem={({ item }) => {
-            const badge = badgeText(item);
-            return (
-              <Pressable style={styles.row} onPress={() => handlePress(item)}>
-                <Text style={styles.name}>{item.name}</Text>
-                <Text style={styles.path}>{item.path}</Text>
-                {badge ? <Text style={styles.badge}>{badge}</Text> : null}
-              </Pressable>
-            );
-          }}
-        />
-      )}
+      <View style={styles.header}>
+        <Button title="+ PC 추가" onPress={() => router.push("/pair")} />
+      </View>
+      <FlatList
+        data={pcs}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
+        ListEmptyComponent={
+          <View style={styles.center}>
+            <Text>등록된 PC가 없습니다.</Text>
+          </View>
+        }
+        renderItem={({ item }) => (
+          <Pressable
+            style={styles.row}
+            onPress={() => handlePress(item)}
+            onLongPress={() => handleLongPress(item)}
+          >
+            <Text style={styles.label}>{item.label}</Text>
+            <Text style={styles.host}>{hostOf(item.baseUrl)}</Text>
+          </Pressable>
+        )}
+      />
     </View>
   );
 }
@@ -148,6 +87,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  header: {
+    padding: 12,
+    alignItems: "flex-start",
+  },
   center: {
     flex: 1,
     alignItems: "center",
@@ -155,31 +98,18 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 12,
   },
-  preflightBanner: {
-    padding: 8,
-    backgroundColor: "#f0f0f0",
-  },
-  preflightText: {
-    textAlign: "center",
-  },
-  errorText: {
-    textAlign: "center",
-  },
   row: {
     padding: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#ccc",
   },
-  name: {
+  label: {
     fontSize: 16,
     fontWeight: "600",
   },
-  path: {
+  host: {
     fontSize: 12,
     color: "#666",
     marginTop: 2,
-  },
-  badge: {
-    marginTop: 4,
   },
 });

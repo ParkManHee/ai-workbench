@@ -3,8 +3,9 @@ import { Button, StyleSheet, Text, View } from "react-native";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import { router } from "expo-router";
 import { parsePairPayload } from "../src/lib/pairing";
-import { pairUrl } from "../src/lib/api";
-import { saveSession } from "../src/store/session";
+import { makeClient, pairUrl } from "../src/lib/api";
+import { pcId } from "../src/lib/pcs-util";
+import { addPC } from "../src/store/pcs";
 
 export default function Pair() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -30,7 +31,16 @@ export default function Pair() {
       if (!res.ok) throw new Error(`pair failed (${res.status})`);
       const body = await res.json();
       if (!body || typeof body.token !== "string") throw new Error("pair failed (no token)");
-      await saveSession(parsed.baseUrl, body.token);
+      const baseUrl = parsed.baseUrl;
+      const token: string = body.token;
+      let label = baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
+      try {
+        const info = await makeClient(baseUrl, token).info();
+        if (info?.hostname) label = info.hostname;
+      } catch {
+        // info() is best-effort; fall back to the host derived from baseUrl.
+      }
+      await addPC({ id: pcId(baseUrl), label, baseUrl, token });
       router.replace("/");
     } catch {
       setError("Pairing failed. Please try again.");
