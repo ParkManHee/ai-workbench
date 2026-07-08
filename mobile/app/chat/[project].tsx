@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  KeyboardAvoidingView,
-  Platform,
+  Keyboard,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -41,6 +40,9 @@ export default function Chat() {
   const [plan, setPlan] = useState(false);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // 키보드 높이를 직접 추적해 입력바를 그만큼 올린다(edge-to-edge Android에서
+  // KeyboardAvoidingView가 네이티브 헤더와 오작동하는 문제 회피).
+  const [kbHeight, setKbHeight] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const runIdRef = useRef<string | null>(null);
@@ -68,6 +70,18 @@ export default function Chat() {
     return () => {
       wsRef.current?.close();
       wsRef.current = null;
+    };
+  }, []);
+
+  // 키보드 표시/숨김에 따라 입력바를 올릴 높이 추적
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", (e) =>
+      setKbHeight(e.endCoordinates.height)
+    );
+    const hide = Keyboard.addListener("keyboardDidHide", () => setKbHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
     };
   }, []);
 
@@ -182,10 +196,7 @@ export default function Chat() {
   const running = chat.running;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
+    <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
       <ScrollView
         ref={scrollRef}
@@ -233,7 +244,12 @@ export default function Chat() {
 
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
-      <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
+      <View
+        style={[
+          styles.inputBar,
+          { marginBottom: kbHeight, paddingBottom: kbHeight > 0 ? 8 : insets.bottom + 8 },
+        ]}
+      >
         <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch value={plan} onValueChange={setPlan} disabled={running} />
@@ -260,7 +276,7 @@ export default function Chat() {
           </Pressable>
         )}
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
