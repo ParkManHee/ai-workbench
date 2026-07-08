@@ -59,6 +59,9 @@ export default function Chat() {
   const doneRef = useRef(true); // true = no run currently in flight
   const reconnectedRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
+  // 최초 콘텐츠 렌더(과거 대화 로드 포함)는 즉시 맨 아래로 점프하고,
+  // 이후(스트리밍 등)부터는 부드럽게 스크롤한다.
+  const didInitialScrollRef = useRef(false);
   // Next transcript line offset to resume incremental polling from.
   const nextLineRef = useRef(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -277,7 +280,10 @@ export default function Chat() {
         ref={scrollRef}
         style={styles.list}
         contentContainerStyle={styles.listContent}
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        onContentSizeChange={() => {
+          scrollRef.current?.scrollToEnd({ animated: didInitialScrollRef.current });
+          didInitialScrollRef.current = true;
+        }}
       >
         {chat.messages.map((m, i) => (
           <View key={i} style={m.role === "user" ? styles.userBubble : styles.assistantBubble}>
