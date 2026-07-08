@@ -50,7 +50,9 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>) {
 
 pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usize, bool) {
     let content = match fs::read_to_string(path) { Ok(c) => c, Err(_) => return (vec![], from_line, false) };
-    let lines: Vec<&str> = content.lines().collect();
+    let mut lines: Vec<&str> = content.lines().collect();
+    // 쓰기 중인(개행 미완) 마지막 줄은 제외 — next에 포함되면 완성된 뒤 건너뛰어 메시지가 유실된다.
+    if !content.ends_with('\n') && !lines.is_empty() { lines.pop(); }
     let mut msgs = vec![];
     for line in lines.iter().skip(from_line) {
         let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
@@ -97,7 +99,9 @@ pub struct Page { pub messages: Vec<TranscriptMsg>, pub prev: Option<usize>, pub
 /// until=None이면 최근 tail_secs(기본 1시간) 메시지(최대 limit개, 없으면 마지막 20개 폴백).
 pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail_secs: u64) -> Page {
     let content = match fs::read_to_string(path) { Ok(c) => c, Err(_) => return Page { messages: vec![], prev: None, next: 0, active: false } };
-    let lines: Vec<&str> = content.lines().collect();
+    let mut lines: Vec<&str> = content.lines().collect();
+    // 쓰기 중인(개행 미완) 마지막 줄 제외 — read_transcript와 동일한 유실 방지
+    if !content.ends_with('\n') && !lines.is_empty() { lines.pop(); }
     let total = lines.len();
     // (line_idx, timestamp, msg) 전체 파싱
     let mut all: Vec<(usize, String, TranscriptMsg)> = vec![];
@@ -224,6 +228,26 @@ mod tests {
         assert!(safe_session_id("0504bb6f-da3c-4c2d"));
         assert!(!safe_session_id("../etc/passwd"));
         assert!(!safe_session_id("a/b"));
+    }
+    #[test]
+    fn partial_last_line_not_counted_then_recovered() {
+        let dir = std::env::temp_dir().join("awb_tx_partial"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("s.jsonl");
+        // 완성 1줄 + 쓰기 중(개행 없음) 1줄
+        std::fs::write(&f, concat!(
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"질문\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"쓰는중")).unwrap();
+        let (msgs, next, _) = read_transcript(f.to_str().unwrap(), 0);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(next, 1, "미완성 줄은 next에 포함되면 안 됨");
+        // 줄 완성 후 next부터 다시 읽으면 유실 없이 잡혀야 함
+        std::fs::write(&f, concat!(
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"질문\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"쓰는중이던말\"}}\n")).unwrap();
+        let (msgs2, next2, _) = read_transcript(f.to_str().unwrap(), next);
+        assert_eq!(msgs2.len(), 1);
+        assert_eq!(msgs2[0].text, "쓰는중이던말");
+        assert_eq!(next2, 2);
     }
     #[test]
     fn epoch_to_iso_known_values() {

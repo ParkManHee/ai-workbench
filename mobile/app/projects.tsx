@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { PC, Preflight, Project } from "../src/lib/types";
@@ -80,12 +80,21 @@ export default function Projects() {
         return;
       }
       setPc(p);
-      load(p, false);
     });
     return () => {
       cancelled = true;
     };
   }, [pcId, load]);
+
+  // 화면에 돌아올 때마다 재조회(첫 로드는 전체 로딩, 이후엔 당김새로고침 스피너만).
+  const hasLoadedRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!pc) return;
+      load(pc, hasLoadedRef.current);
+      hasLoadedRef.current = true;
+    }, [pc, load])
+  );
 
   function handleRetry() {
     if (pc) load(pc, false);
