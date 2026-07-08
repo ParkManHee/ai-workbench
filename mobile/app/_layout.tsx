@@ -40,6 +40,8 @@ export default function RootLayout() {
           <Stack.Screen name="index" options={{ title: "PC" }} />
           {/* projects 타이틀은 화면에서 PC label로 동적 설정 */}
           <Stack.Screen name="projects" options={{ title: "프로젝트" }} />
+          {/* sessions/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
+          <Stack.Screen name="sessions/[project]" options={{ title: "세션" }} />
           <Stack.Screen name="pair" options={{ title: "페어링" }} />
           {/* chat/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
           <Stack.Screen name="chat/[project]" options={{ title: "실행" }} />
