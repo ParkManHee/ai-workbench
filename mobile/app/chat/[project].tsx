@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
@@ -30,6 +30,9 @@ interface DiffSummary {
 export default function Chat() {
   const { project, path } = useLocalSearchParams<{ project: string; path: string }>();
   const insets = useSafeAreaInsets();
+  // 키보드가 열리면 입력바가 키보드 위로 올라가므로, 하단 내비바 안전영역 패딩을
+  // 빼서 입력바와 키보드 사이 흰 공백을 없앤다(닫혀 있을 때만 안전영역 적용).
+  const kbVisible = useKeyboardState((s) => s.isVisible);
   // undefined = not checked yet, null = checked and no session (redirecting)
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   // initialChatState() has running:true by design (it's the state reset when a
@@ -230,7 +233,7 @@ export default function Chat() {
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
       <KeyboardStickyView>
-        <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
+        <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch
