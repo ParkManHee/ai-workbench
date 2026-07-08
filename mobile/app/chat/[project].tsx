@@ -10,7 +10,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams, Stack } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import type { ChatMsg, ChatState, WsEvent } from "../../src/lib/types";
@@ -29,6 +30,7 @@ interface DiffSummary {
 
 export default function Chat() {
   const { project, path } = useLocalSearchParams<{ project: string; path: string }>();
+  const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and no session (redirecting)
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   // initialChatState() has running:true by design (it's the state reset when a
@@ -169,7 +171,12 @@ export default function Chat() {
   }
 
   if (!session) {
-    return <View style={styles.container} />;
+    return (
+      <>
+        <Stack.Screen options={{ title: project ?? "실행" }} />
+        <View style={styles.container} />
+      </>
+    );
   }
 
   const running = chat.running;
@@ -179,6 +186,7 @@ export default function Chat() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <Stack.Screen options={{ title: project ?? "실행" }} />
       <ScrollView
         ref={scrollRef}
         style={styles.list}
@@ -225,7 +233,7 @@ export default function Chat() {
 
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
-      <View style={styles.inputBar}>
+      <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
         <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch value={plan} onValueChange={setPlan} disabled={running} />

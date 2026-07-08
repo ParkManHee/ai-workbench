@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Stack, router } from "expo-router";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as Notifications from "expo-notifications";
 import { makeClient } from "../src/lib/api";
 import { loadSession, type Session } from "../src/store/session";
@@ -29,5 +30,14 @@ export default function RootLayout() {
     });
   }, []);
 
-  return <Stack />;
+  return (
+    <SafeAreaProvider>
+      <Stack>
+        <Stack.Screen name="index" options={{ title: "AI Workbench" }} />
+        <Stack.Screen name="pair" options={{ title: "페어링" }} />
+        {/* chat/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
+        <Stack.Screen name="chat/[project]" options={{ title: "실행" }} />
+      </Stack>
+    </SafeAreaProvider>
+  );
 }
