@@ -108,8 +108,8 @@ export default function Chat() {
       if (!doneRef.current) return; // local run in flight; let its WS drive the UI
       try {
         const res = await makeClient(p.baseUrl, p.token).transcript(project, session, nextLineRef.current);
+        nextLineRef.current = res.next; // 항상 전진(필터로 메시지가 비어도 재파싱 중복 방지)
         if (res.messages.length > 0) {
-          nextLineRef.current = res.next;
           setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
         }
         if (!res.active) stopPoll();
