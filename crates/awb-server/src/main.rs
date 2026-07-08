@@ -29,7 +29,7 @@ async fn serve() {
     let pc = pairing::PairingCode::generate();
     let ip = config::tailnet_ipv4().unwrap_or_else(|| "127.0.0.1".into());
     let payload = format!("awb://{ip}:{}?code={}", cfg.port, pc.code);
-    println!("=== 폰 페어링 QR (60초 유효) — 코드 {} ===", pc.code);
+    println!("=== 폰 페어링 QR (10분 유효) — 코드 {} ===", pc.code);
     println!("{}", pairing::render_terminal(&payload));
     pairing::save_png(&payload, &format!("{}/.claude/.awb-pair.png", std::env::var("HOME").unwrap_or_default()));
     let roots = routes::default_roots();

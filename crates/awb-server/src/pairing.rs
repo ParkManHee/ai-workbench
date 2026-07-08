@@ -16,7 +16,8 @@ impl PairingCode {
         const A: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // 혼동문자 제외
         let mut r = rand::thread_rng();
         let code: String = (0..6).map(|_| A[r.gen_range(0..A.len())] as char).collect();
-        PairingCode { code, expires_at: now() + 60 }
+        // 10분: 빌드/설치 후 여유있게 페어링(레이스 방지). tailnet 한정 + 1회성이라 실질 위험 낮음.
+        PairingCode { code, expires_at: now() + 600 }
     }
     pub fn is_valid(&self, code: &str, at: u64) -> bool {
         self.code == code && at <= self.expires_at
