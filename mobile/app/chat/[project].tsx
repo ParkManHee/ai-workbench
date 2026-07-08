@@ -13,8 +13,13 @@ import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
-import type { ChatMsg, ChatState, WsEvent } from "../../src/lib/types";
-import { clearSession, loadSession, type Session } from "../../src/store/session";
+import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
+import { getPC, removePC } from "../../src/store/pcs";
+
+/** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
+function toChatMsg(m: TranscriptMsg): ChatMsg {
+  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools };
+}
 
 interface DiffEntry {
   path: string;
@@ -28,13 +33,18 @@ interface DiffSummary {
 }
 
 export default function Chat() {
-  const { project, path } = useLocalSearchParams<{ project: string; path: string }>();
+  const { project, pc: pcId, path, session } = useLocalSearchParams<{
+    project: string;
+    pc: string;
+    path: string;
+    session?: string;
+  }>();
   const insets = useSafeAreaInsets();
   // 키보드가 열리면 입력바가 키보드 위로 올라가므로, 하단 내비바 안전영역 패딩을
   // 빼서 입력바와 키보드 사이 흰 공백을 없앤다(닫혀 있을 때만 안전영역 적용).
   const kbVisible = useKeyboardState((s) => s.isVisible);
-  // undefined = not checked yet, null = checked and no session (redirecting)
-  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  // undefined = not checked yet, null = checked and no PC found (redirecting)
+  const [pc, setPc] = useState<PC | null | undefined>(undefined);
   // initialChatState() has running:true by design (it's the state reset when a
   // run starts, per reduceEvent's tests); the idle screen before any send
   // should not show a "cancel"/disabled input, so start with running:false.
@@ -49,21 +59,30 @@ export default function Chat() {
   const doneRef = useRef(true); // true = no run currently in flight
   const reconnectedRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
+  // Next transcript line offset to resume incremental polling from.
+  const nextLineRef = useRef(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    loadSession().then((s) => {
+    if (!pcId) {
+      setPc(null);
+      router.replace("/");
+      return;
+    }
+    getPC(pcId).then((p) => {
       if (cancelled) return;
-      if (!s) {
-        router.replace("/pair");
+      if (!p) {
+        setPc(null);
+        router.replace("/");
         return;
       }
-      setSession(s);
+      setPc(p);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pcId]);
 
   // Close any open socket when the screen unmounts (avoid leaked connections).
   useEffect(() => {
@@ -73,11 +92,70 @@ export default function Chat() {
     };
   }, []);
 
-  const client = useMemo(() => (session ? makeClient(session.baseUrl, session.token) : null), [session]);
+  // Stop the active-session poll (unmount, or the user starts their own run).
+  function stopPoll() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
 
-  function connectWs(runId: string, s: Session) {
+  // Poll a resumed session that's actively running elsewhere (PC), appending
+  // any new transcript lines. Skips a tick while a local run is in flight.
+  function startPoll(p: PC) {
+    if (pollRef.current || !session) return;
+    pollRef.current = setInterval(async () => {
+      if (!doneRef.current) return; // local run in flight; let its WS drive the UI
+      try {
+        const res = await makeClient(p.baseUrl, p.token).transcript(project, session, nextLineRef.current);
+        if (res.messages.length > 0) {
+          nextLineRef.current = res.next;
+          setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
+        }
+        if (!res.active) stopPoll();
+      } catch (e) {
+        if (isUnauthorized(e)) {
+          stopPoll();
+          await removePC(p.id);
+          router.replace("/");
+        }
+        // else: transient network error, keep polling
+      }
+    }, 2000);
+  }
+
+  // Load prior transcript for a resumed session, then start the active poll if needed.
+  useEffect(() => {
+    if (!pc || !session) return;
+    let cancelled = false;
+    makeClient(pc.baseUrl, pc.token)
+      .transcript(project, session, 0)
+      .then((res) => {
+        if (cancelled) return;
+        nextLineRef.current = res.next;
+        setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
+        if (res.active) startPoll(pc);
+      })
+      .catch(async (e) => {
+        if (cancelled) return;
+        if (isUnauthorized(e)) {
+          await removePC(pc.id);
+          router.replace("/");
+        }
+        // else: best-effort load; leave the chat empty and let the user send.
+      });
+    return () => {
+      cancelled = true;
+      stopPoll();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pc, session, project]);
+
+  const client = useMemo(() => (pc ? makeClient(pc.baseUrl, pc.token) : null), [pc]);
+
+  function connectWs(runId: string, p: PC) {
     doneRef.current = false;
-    const ws = new WebSocket(streamUrl(s.baseUrl, runId, 0, s.token));
+    const ws = new WebSocket(streamUrl(p.baseUrl, runId, 0, p.token));
     wsRef.current = ws;
 
     ws.onmessage = (e: { data: string }) => {
@@ -90,7 +168,7 @@ export default function Chat() {
       setChat((prev) => reduceEvent(prev, ev));
       if (ev.kind === "done") {
         doneRef.current = true;
-        fetchDiff(s);
+        fetchDiff(p);
         ws.close();
       } else if (ev.kind === "error") {
         doneRef.current = true;
@@ -111,7 +189,7 @@ export default function Chat() {
           if (msgs.at(-1)?.role === "assistant") msgs.pop();
           return { ...initialChatState(), messages: msgs };
         });
-        connectWs(runId, s);
+        connectWs(runId, p);
         return;
       }
       doneRef.current = true;
@@ -123,10 +201,10 @@ export default function Chat() {
     };
   }
 
-  async function fetchDiff(s: Session) {
+  async function fetchDiff(p: PC) {
     if (!path) return;
     try {
-      const d: DiffSummary = await makeClient(s.baseUrl, s.token).diff(path);
+      const d: DiffSummary = await makeClient(p.baseUrl, p.token).diff(path);
       setDiff(d);
     } catch {
       // git summary is best-effort; ignore failures.
@@ -134,10 +212,11 @@ export default function Chat() {
   }
 
   async function handleSend() {
-    if (!session || !client || !project) return;
+    if (!pc || !client || !project) return;
     const text = prompt.trim();
     if (!text || chat.running) return;
 
+    stopPoll(); // the user's own run now drives the live view
     setSendError(null);
     setDiff(null);
     setPrompt("");
@@ -147,14 +226,14 @@ export default function Chat() {
     setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
 
     try {
-      const { run_id } = await client.chat(project, text, plan);
+      const { run_id } = await client.chat(project, text, plan, session);
       runIdRef.current = run_id;
-      connectWs(run_id, session);
+      connectWs(run_id, pc);
     } catch (e) {
       if (isUnauthorized(e)) {
-        // Token revoked/invalid → drop it and send the user back to pairing.
-        await clearSession();
-        router.replace("/pair");
+        // Token revoked/invalid → drop this PC and send the user back to the PC list.
+        await removePC(pc.id);
+        router.replace("/");
         return;
       }
       setSendError("전송 실패. 다시 시도해주세요.");
@@ -164,15 +243,15 @@ export default function Chat() {
 
   function handleCancel() {
     const runId = runIdRef.current;
-    if (!session || !runId) return;
+    if (!pc || !runId) return;
     // Fire-and-forget: the run's WS stream will still emit a terminal `done`
     // event once the process is killed, which drives the rest of the UI.
-    makeClient(session.baseUrl, session.token)
+    makeClient(pc.baseUrl, pc.token)
       .cancel(runId)
       .catch(() => {});
   }
 
-  if (!session) {
+  if (!pc) {
     return (
       <>
         <Stack.Screen options={{ title: project ?? "실행" }} />
@@ -186,6 +265,14 @@ export default function Chat() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
+      {session && path ? (
+        <View style={styles.resumeBar}>
+          <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
+          <Text style={styles.resumeCmd} selectable>
+            {`cd ${path} && claude --resume ${session}`}
+          </Text>
+        </View>
+      ) : null}
       <ScrollView
         ref={scrollRef}
         style={styles.list}
@@ -274,6 +361,23 @@ export default function Chat() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  resumeBar: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#f7f7f7",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#ccc",
+    gap: 2,
+  },
+  resumeLabel: {
+    fontSize: 11,
+    color: "#666",
+  },
+  resumeCmd: {
+    fontSize: 12,
+    fontFamily: "monospace",
+    color: "#222",
   },
   list: {
     flex: 1,
