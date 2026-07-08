@@ -142,15 +142,39 @@ export default function Chat() {
     }, 2000);
   }
 
-  // Load prior transcript for a resumed session, then start the active poll if needed.
+  // 위로 스크롤 페이지네이션: prev(더 이전 페이지의 기준 line idx)와 로딩 가드.
+  const prevRef = useRef<number | null>(null);
+  const loadingOlderRef = useRef(false);
+  const suppressAutoScrollRef = useRef(false);
+
+  async function loadOlder() {
+    if (!pc || !session || loadingOlderRef.current || prevRef.current == null) return;
+    loadingOlderRef.current = true;
+    try {
+      const res = await makeClient(pc.baseUrl, pc.token).transcriptBefore(project, session, prevRef.current);
+      prevRef.current = res.prev;
+      if (res.messages.length > 0) {
+        suppressAutoScrollRef.current = true; // prepend 시 맨아래 자동 스크롤 금지
+        setExpandedTools(new Set()); // index 기반 펼침 상태는 시프트되므로 리셋
+        setChat((prev) => ({ ...prev, messages: [...res.messages.map(toChatMsg), ...prev.messages] }));
+      }
+    } catch {
+      // best-effort; 다음 스크롤에서 재시도
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }
+
+  // Load recent transcript (최근 1시간) for a resumed session, then start the active poll if needed.
   useEffect(() => {
     if (!pc || !session) return;
     let cancelled = false;
     makeClient(pc.baseUrl, pc.token)
-      .transcript(project, session, 0)
+      .transcriptTail(project, session)
       .then((res) => {
         if (cancelled) return;
         nextLineRef.current = res.next;
+        prevRef.current = res.prev;
         setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
         if (res.active) startPoll(pc);
       })
@@ -295,7 +319,18 @@ export default function Chat() {
         ref={scrollRef}
         style={styles.list}
         contentContainerStyle={styles.listContent}
+        scrollEventThrottle={100}
+        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+        onScroll={(e) => {
+          // 맨 위 근처로 스크롤하면 이전 대화 페이지 로드
+          if (e.nativeEvent.contentOffset.y <= 30) loadOlder();
+        }}
         onContentSizeChange={() => {
+          if (suppressAutoScrollRef.current) {
+            // 이전 페이지 prepend로 인한 크기 변화 — 맨아래로 튀지 않게 1회 무시
+            suppressAutoScrollRef.current = false;
+            return;
+          }
           scrollRef.current?.scrollToEnd({ animated: didInitialScrollRef.current });
           didInitialScrollRef.current = true;
         }}

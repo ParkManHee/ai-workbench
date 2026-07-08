@@ -139,7 +139,10 @@ export default function Projects() {
             const badge = badgeText(item);
             return (
               <Pressable style={styles.row} onPress={() => handlePress(item)}>
-                <Text style={styles.name}>{item.name}</Text>
+                <Text style={styles.name}>
+                  {item.agent_status === "working" ? "🟢 " : item.agent_status === "waiting" ? "🔴 " : ""}
+                  {item.name}
+                </Text>
                 <Text style={styles.path}>{item.path}</Text>
                 {badge ? <Text style={styles.badge}>{badge}</Text> : null}
               </Pressable>

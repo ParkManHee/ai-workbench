@@ -14,7 +14,7 @@ fn home() -> String { std::env::var("HOME").unwrap_or_default() }
 fn projects_root() -> String { format!("{}/.claude/projects", home()) }
 
 #[derive(Serialize, Clone)]
-pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool }
+pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool, pub waiting: bool }
 #[derive(Serialize, Clone)]
 pub struct TranscriptMsg { pub role: String, pub text: String, pub tools: Vec<String>, pub tool_details: Vec<String> }
 
@@ -71,6 +71,124 @@ pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usi
     (msgs, lines.len(), active)
 }
 
+/// epoch초 → "YYYY-MM-DDTHH:MM:SS"(UTC) — 트랜스크립트 timestamp(ISO8601)와 사전순 비교용.
+fn epoch_to_iso(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Howard Hinnant civil_from_days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}")
+}
+
+/// 페이지 응답: 메시지들 + prev(더 이전 페이지 요청용 line idx, 없으면 None) + next(라이브 폴 offset) + active.
+#[derive(Serialize)]
+pub struct Page { pub messages: Vec<TranscriptMsg>, pub prev: Option<usize>, pub next: usize, pub active: bool }
+
+/// 페이지 조회. until=Some(L)이면 L 이전 메시지 중 마지막 limit개("위로 스크롤"),
+/// until=None이면 최근 tail_secs(기본 1시간) 메시지(최대 limit개, 없으면 마지막 20개 폴백).
+pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail_secs: u64) -> Page {
+    let content = match fs::read_to_string(path) { Ok(c) => c, Err(_) => return Page { messages: vec![], prev: None, next: 0, active: false } };
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    // (line_idx, timestamp, msg) 전체 파싱
+    let mut all: Vec<(usize, String, TranscriptMsg)> = vec![];
+    for (i, line) in lines.iter().enumerate() {
+        let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
+        if let Some(r @ ("user" | "assistant")) = v.get("type").and_then(|t| t.as_str()) {
+            if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
+                let (text, tools, tool_details) = parse_content(c);
+                if !text.is_empty() || !tools.is_empty() {
+                    let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                    all.push((i, ts, TranscriptMsg { role: r.to_string(), text, tools, tool_details }));
+                }
+            }
+        }
+    }
+    let active = fs::metadata(path).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| now().saturating_sub(d.as_secs()) <= 90).unwrap_or(false);
+    let taken: Vec<&(usize, String, TranscriptMsg)> = match until {
+        Some(u) => {
+            let cands: Vec<&_> = all.iter().filter(|(i, _, _)| *i < u).collect();
+            let start = cands.len().saturating_sub(limit);
+            cands[start..].to_vec()
+        }
+        None => {
+            let cutoff = epoch_to_iso(now().saturating_sub(tail_secs));
+            let cands: Vec<&_> = all.iter().filter(|(_, ts, _)| ts.as_str() >= cutoff.as_str()).collect();
+            let cands = if cands.is_empty() {
+                let start = all.len().saturating_sub(20);
+                all[start..].iter().collect()
+            } else { cands };
+            let start = cands.len().saturating_sub(limit);
+            cands[start..].to_vec()
+        }
+    };
+    let first_idx = taken.first().map(|(i, _, _)| *i);
+    let prev = first_idx.filter(|fi| all.iter().any(|(i, _, _)| i < fi)).map(|fi| fi);
+    Page { messages: taken.into_iter().map(|(_, _, m)| m.clone()).collect(), prev, next: total, active }
+}
+
+/// 마지막 메시지가 "사용자 답을 기다리는 질문"인가 — AskUserQuestion 툴 또는 '?'로 끝나는 assistant 텍스트.
+fn is_waiting_msg(m: &TranscriptMsg) -> bool {
+    m.role == "assistant"
+        && (m.tools.iter().any(|t| t == "AskUserQuestion") || m.text.trim_end().ends_with('?'))
+}
+
+/// 파일 끝부분(최대 64KB)만 읽어 마지막 user/assistant 메시지를 파싱 — /projects 상태 판정용 저비용 경로.
+fn last_msg_from_tail(path: &str) -> Option<TranscriptMsg> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(64 * 1024);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let s = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = s.lines().collect();
+    if start > 0 && !lines.is_empty() { lines.remove(0); } // 잘린 첫 줄 버림
+    for line in lines.iter().rev() {
+        let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
+        if let Some(r @ ("user" | "assistant")) = v.get("type").and_then(|t| t.as_str()) {
+            if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
+                let (text, tools, tool_details) = parse_content(c);
+                if !text.is_empty() || !tools.is_empty() {
+                    return Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 프로젝트 상태: 최신 세션이 활발히 갱신 중이면 "working"(🟢), 아니고 마지막 메시지가 질문 대기면 "waiting"(🔴).
+pub fn project_status(slug: &str) -> Option<String> {
+    project_status_in(&format!("{}/{}", projects_root(), slug))
+}
+pub fn project_status_in(dir: &str) -> Option<String> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut latest: Option<(u64, std::path::PathBuf)> = None;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("jsonl") { continue; }
+        let m = e.metadata().and_then(|m| m.modified()).ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+        if latest.as_ref().map(|(lm, _)| m > *lm).unwrap_or(true) { latest = Some((m, p)); }
+    }
+    let (mtime, path) = latest?;
+    if now().saturating_sub(mtime) <= 90 { return Some("working".to_string()); }
+    let last = last_msg_from_tail(path.to_str()?)?;
+    if is_waiting_msg(&last) { Some("waiting".to_string()) } else { None }
+}
+
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
     let dir = format!("{}/{}", projects_root(), slug);
     let mut out = vec![];
@@ -86,7 +204,8 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
         let preview = msgs.iter().find(|m| m.role == "user").map(|m| {
             let t: String = m.text.chars().take(60).collect(); t
         }).unwrap_or_default();
-        out.push(SessionInfo { session_id: sid, updated, preview, count: msgs.len() as u32, active });
+        let waiting = !active && msgs.last().map(is_waiting_msg).unwrap_or(false);
+        out.push(SessionInfo { session_id: sid, updated, preview, count: msgs.len() as u32, active, waiting });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
     out
@@ -105,6 +224,34 @@ mod tests {
         assert!(safe_session_id("0504bb6f-da3c-4c2d"));
         assert!(!safe_session_id("../etc/passwd"));
         assert!(!safe_session_id("a/b"));
+    }
+    #[test]
+    fn epoch_to_iso_known_values() {
+        assert_eq!(epoch_to_iso(0), "1970-01-01T00:00:00");
+        assert_eq!(epoch_to_iso(86_400 + 3661), "1970-01-02T01:01:01");
+    }
+    #[test]
+    fn page_tail_and_scrollback() {
+        let dir = std::env::temp_dir().join("awb_tx_page"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p1.jsonl");
+        let recent = epoch_to_iso(now() - 10);
+        std::fs::write(&f, format!(concat!(
+            "{{\"type\":\"user\",\"timestamp\":\"2020-01-01T00:00:00.000Z\",\"message\":{{\"role\":\"user\",\"content\":\"옛날1\"}}}}\n",
+            "{{\"type\":\"assistant\",\"timestamp\":\"2020-01-01T00:00:01.000Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"옛답1\"}}]}}}}\n",
+            "{{\"type\":\"user\",\"timestamp\":\"{r}.000Z\",\"message\":{{\"role\":\"user\",\"content\":\"최근1\"}}}}\n",
+            "{{\"type\":\"assistant\",\"timestamp\":\"{r}.100Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"최근답1\"}}]}}}}\n"
+        ), r = recent)).unwrap();
+        // tail(1시간): 최근 2개만, prev는 최근1의 라인(2) — 그 앞에 옛 메시지 존재
+        let p = read_transcript_page(f.to_str().unwrap(), None, 100, 3600);
+        assert_eq!(p.messages.len(), 2);
+        assert_eq!(p.messages[0].text, "최근1");
+        assert_eq!(p.prev, Some(2));
+        assert_eq!(p.next, 4);
+        // 위로 스크롤: until=2 이전 → 옛 2개, 더 이전 없음 → prev=None
+        let older = read_transcript_page(f.to_str().unwrap(), Some(2), 50, 3600);
+        assert_eq!(older.messages.len(), 2);
+        assert_eq!(older.messages[0].text, "옛날1");
+        assert_eq!(older.prev, None);
     }
     #[test]
     fn parses_user_and_assistant_lines() {

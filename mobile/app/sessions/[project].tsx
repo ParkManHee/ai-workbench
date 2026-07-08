@@ -149,7 +149,7 @@ export default function Sessions() {
                 <Text style={styles.preview} numberOfLines={1}>
                   {item.preview || "(빈 대화)"}
                 </Text>
-                {item.active ? <Text style={styles.activeBadge}>🟢</Text> : null}
+                {item.active ? <Text style={styles.activeBadge}>🟢</Text> : item.waiting ? <Text style={styles.activeBadge}>🔴</Text> : null}
               </View>
               <Text style={styles.updated}>{formatUpdated(item.updated)}</Text>
             </Pressable>

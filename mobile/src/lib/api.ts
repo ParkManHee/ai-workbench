@@ -32,6 +32,10 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
+    transcriptTail: (project: string, sessionId: string): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
+      jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
+    transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
+      jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
     chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string) => {
       const body: Record<string, unknown> = { prompt, plan };
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
