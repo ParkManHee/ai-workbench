@@ -233,7 +233,12 @@ export default function Chat() {
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
-          <Switch value={plan} onValueChange={setPlan} disabled={running} />
+          <Switch
+            value={plan}
+            onValueChange={setPlan}
+            disabled={running}
+            style={{ transform: [{ scale: 0.85 }] }}
+          />
         </View>
         <TextInput
           style={styles.input}
@@ -242,6 +247,7 @@ export default function Chat() {
           onChangeText={setPrompt}
           editable={!running}
           placeholder="메시지를 입력하세요"
+          placeholderTextColor="#333"
         />
         {running ? (
           <Pressable style={styles.cancelButton} onPress={handleCancel}>
@@ -351,11 +357,14 @@ const styles = StyleSheet.create({
     borderTopColor: "#ccc",
   },
   planRow: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 4,
+    height: 40,
   },
   planLabel: {
-    fontSize: 11,
-    color: "#666",
+    fontSize: 13,
+    color: "#333",
   },
   input: {
     flex: 1,
@@ -365,6 +374,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     maxHeight: 120,
+    color: "#111",
   },
   sendButton: {
     backgroundColor: "#2f6fed",
