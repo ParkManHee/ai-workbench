@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -146,10 +147,14 @@ export default function Chat() {
   const prevRef = useRef<number | null>(null);
   const loadingOlderRef = useRef(false);
   const suppressAutoScrollRef = useRef(false);
+  const [loadingOlder, setLoadingOlder] = useState(false); // 상단 스피너 표시용
+  // 자동 스크롤은 "메시지 개수가 늘었을 때"만 — 툴 펼침/접힘 등 크기 변화로는 안 튀게.
+  const lastMsgCountRef = useRef(0);
 
   async function loadOlder() {
     if (!pc || !session || loadingOlderRef.current || prevRef.current == null) return;
     loadingOlderRef.current = true;
+    setLoadingOlder(true);
     try {
       const res = await makeClient(pc.baseUrl, pc.token).transcriptBefore(project, session, prevRef.current);
       prevRef.current = res.prev;
@@ -162,6 +167,7 @@ export default function Chat() {
       // best-effort; 다음 스크롤에서 재시도
     } finally {
       loadingOlderRef.current = false;
+      setLoadingOlder(false);
     }
   }
 
@@ -322,19 +328,32 @@ export default function Chat() {
         scrollEventThrottle={100}
         maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
         onScroll={(e) => {
-          // 맨 위 근처로 스크롤하면 이전 대화 페이지 로드
-          if (e.nativeEvent.contentOffset.y <= 30) loadOlder();
+          // 맨 위 근처로 스크롤하면 이전 대화 페이지 로드.
+          // 단, 최초 포커스(맨아래 점프) 전에는 발동 금지 — 진입 직후 y=0에서 오발동해 포커스를 망침.
+          if (didInitialScrollRef.current && e.nativeEvent.contentOffset.y <= 30) loadOlder();
         }}
         onContentSizeChange={() => {
+          const count = chat.messages.length;
+          const grew = count > lastMsgCountRef.current;
+          lastMsgCountRef.current = count;
           if (suppressAutoScrollRef.current) {
             // 이전 페이지 prepend로 인한 크기 변화 — 맨아래로 튀지 않게 1회 무시
             suppressAutoScrollRef.current = false;
             return;
           }
-          scrollRef.current?.scrollToEnd({ animated: didInitialScrollRef.current });
-          didInitialScrollRef.current = true;
+          if (!didInitialScrollRef.current) {
+            // 최초 로드: 즉시 맨아래로 점프(+레이아웃 안정화 후 한 번 더)
+            if (count === 0) return; // 아직 콘텐츠 없음 — 포커스 완료로 치지 않는다
+            scrollRef.current?.scrollToEnd({ animated: false });
+            setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 80);
+            didInitialScrollRef.current = true;
+            return;
+          }
+          // 이후: 메시지가 늘었을 때만(스트리밍/폴 수신) 아래로 — 툴 펼침/접힘엔 안 움직임
+          if (grew) scrollRef.current?.scrollToEnd({ animated: true });
         }}
       >
+        {loadingOlder ? <ActivityIndicator style={{ marginVertical: 8 }} /> : null}
         {chat.messages.map((m, i) => {
           const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
           const hasText = m.text.trim().length > 0;
