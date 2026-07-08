@@ -48,24 +48,60 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>) {
     }
 }
 
+/// 하네스가 user 라인/큐에 주입하는 시스템 텍스트 프리픽스 — 사용자 입력이 아니므로 표시하지 않는다.
+const NOISE_PREFIXES: &[&str] = &["<task-notification>", "<command-name>", "<command-message>", "<command-args>", "<local-command", "<system-reminder>"];
+fn is_noise_text(s: &str) -> bool {
+    let t = s.trim_start();
+    NOISE_PREFIXES.iter().any(|p| t.starts_with(p))
+}
+
+/// queue-operation enqueue(에이전트 작업 중 타이핑한 메시지) → 사용자 텍스트.
+/// 이 메시지들은 system-reminder로 주입될 뿐 user 라인으로 재기록되지 않는 경우가 있어
+/// enqueue 시점에 표시해야 유실이 없다. 시스템 주입(task-notification 등)은 제외.
+fn enqueued_user_text(v: &Value) -> Option<String> {
+    if v.get("type").and_then(|t| t.as_str()) != Some("queue-operation") { return None; }
+    if v.get("operation").and_then(|o| o.as_str()) != Some("enqueue") { return None; }
+    let c = v.get("content").and_then(|c| c.as_str())?.trim();
+    if c.is_empty() || is_noise_text(c) { return None; }
+    Some(c.to_string())
+}
+fn queued_msg(text: String) -> TranscriptMsg {
+    TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![] }
+}
+
+/// user/assistant 라인 → 표시 메시지. 메타(스킬/훅 본문)·사이드체인(서브에이전트)·하네스 주입 텍스트는 숨긴다.
+fn parse_msg_line(v: &Value) -> Option<TranscriptMsg> {
+    let r = match v.get("type").and_then(|t| t.as_str()) { Some(r @ ("user" | "assistant")) => r, _ => return None };
+    if v.get("isMeta").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
+    if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
+    let (text, tools, tool_details) = parse_content(v.get("message")?.get("content")?);
+    if text.is_empty() && tools.is_empty() { return None; }
+    if r == "user" && is_noise_text(&text) { return None; }
+    Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details })
+}
+
+/// enqueue로 이미 표시한 메시지가 턴 종료 후 실제 user 라인으로 재기록(dequeue)된 경우 중복 억제.
+/// i 이전의 동일 텍스트 enqueue가 있으면 하나 소비하고 true(해당 user 라인은 건너뜀).
+fn consume_queued(queued: &mut Vec<(usize, String)>, i: usize, text: &str) -> bool {
+    if let Some(p) = queued.iter().position(|(j, t)| *j < i && t == text.trim()) { queued.remove(p); true } else { false }
+}
+
 pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usize, bool) {
     let content = match fs::read_to_string(path) { Ok(c) => c, Err(_) => return (vec![], from_line, false) };
     let mut lines: Vec<&str> = content.lines().collect();
     // 쓰기 중인(개행 미완) 마지막 줄은 제외 — next에 포함되면 완성된 뒤 건너뛰어 메시지가 유실된다.
     if !content.ends_with('\n') && !lines.is_empty() { lines.pop(); }
+    let vals: Vec<Option<Value>> = lines.iter().map(|l| serde_json::from_str(l).ok()).collect();
+    // 큐 중복 억제는 from_line 이전의 enqueue도 알아야 하므로 전체에서 수집
+    let mut queued: Vec<(usize, String)> = vals.iter().enumerate()
+        .filter_map(|(i, v)| v.as_ref().and_then(enqueued_user_text).map(|t| (i, t))).collect();
     let mut msgs = vec![];
-    for line in lines.iter().skip(from_line) {
-        let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
-        match v.get("type").and_then(|t| t.as_str()) {
-            Some(r @ ("user" | "assistant")) => {
-                if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
-                    let (text, tools, tool_details) = parse_content(c);
-                    if !text.is_empty() || !tools.is_empty() {
-                        msgs.push(TranscriptMsg { role: r.to_string(), text, tools, tool_details });
-                    }
-                }
-            }
-            _ => {}
+    for (i, v) in vals.iter().enumerate().skip(from_line) {
+        let Some(v) = v else { continue };
+        if let Some(t) = enqueued_user_text(v) { msgs.push(queued_msg(t)); continue; }
+        if let Some(m) = parse_msg_line(v) {
+            if m.role == "user" && consume_queued(&mut queued, i, &m.text) { continue; }
+            msgs.push(m);
         }
     }
     let active = fs::metadata(path).and_then(|m| m.modified()).ok()
@@ -103,18 +139,18 @@ pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail
     // 쓰기 중인(개행 미완) 마지막 줄 제외 — read_transcript와 동일한 유실 방지
     if !content.ends_with('\n') && !lines.is_empty() { lines.pop(); }
     let total = lines.len();
-    // (line_idx, timestamp, msg) 전체 파싱
+    // (line_idx, timestamp, msg) 전체 파싱 — read_transcript와 동일한 큐/노이즈 규칙
+    let vals: Vec<Option<Value>> = lines.iter().map(|l| serde_json::from_str(l).ok()).collect();
+    let mut queued: Vec<(usize, String)> = vals.iter().enumerate()
+        .filter_map(|(i, v)| v.as_ref().and_then(enqueued_user_text).map(|t| (i, t))).collect();
     let mut all: Vec<(usize, String, TranscriptMsg)> = vec![];
-    for (i, line) in lines.iter().enumerate() {
-        let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
-        if let Some(r @ ("user" | "assistant")) = v.get("type").and_then(|t| t.as_str()) {
-            if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
-                let (text, tools, tool_details) = parse_content(c);
-                if !text.is_empty() || !tools.is_empty() {
-                    let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                    all.push((i, ts, TranscriptMsg { role: r.to_string(), text, tools, tool_details }));
-                }
-            }
+    for (i, v) in vals.iter().enumerate() {
+        let Some(v) = v else { continue };
+        let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        if let Some(t) = enqueued_user_text(v) { all.push((i, ts, queued_msg(t))); continue; }
+        if let Some(m) = parse_msg_line(v) {
+            if m.role == "user" && consume_queued(&mut queued, i, &m.text) { continue; }
+            all.push((i, ts, m));
         }
     }
     let active = fs::metadata(path).and_then(|m| m.modified()).ok()
@@ -161,14 +197,9 @@ fn last_msg_from_tail(path: &str) -> Option<TranscriptMsg> {
     if start > 0 && !lines.is_empty() { lines.remove(0); } // 잘린 첫 줄 버림
     for line in lines.iter().rev() {
         let v: Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
-        if let Some(r @ ("user" | "assistant")) = v.get("type").and_then(|t| t.as_str()) {
-            if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
-                let (text, tools, tool_details) = parse_content(c);
-                if !text.is_empty() || !tools.is_empty() {
-                    return Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details });
-                }
-            }
-        }
+        // 작업 중 타이핑(enqueue)도 사용자 응답 — 질문대기 판정이 풀려야 하므로 user 메시지로 취급
+        if let Some(t) = enqueued_user_text(&v) { return Some(queued_msg(t)); }
+        if let Some(m) = parse_msg_line(&v) { return Some(m); }
     }
     None
 }
@@ -276,6 +307,52 @@ mod tests {
         assert_eq!(older.messages.len(), 2);
         assert_eq!(older.messages[0].text, "옛날1");
         assert_eq!(older.prev, None);
+    }
+    #[test]
+    fn queued_messages_shown_and_dequeue_replay_deduped() {
+        let dir = std::env::temp_dir().join("awb_tx_queue"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("q1.jsonl");
+        std::fs::write(&f, concat!(
+            // 작업 중 타이핑 → enqueue로만 기록(전달은 system-reminder 주입, user 라인 재기록 없음)
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:00.000Z\",\"content\":\"작업 중에 입력한 메시지\"}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-07-08T10:00:01.000Z\"}\n",
+            // 시스템이 큐에 넣는 task-notification은 표시하면 안 됨
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:02.000Z\",\"content\":\"<task-notification>\\n<task-id>x</task-id>\"}\n",
+            // 턴 종료 후 dequeue된 메시지는 실제 user 라인으로 재기록 → 중복 표시 금지
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:03.000Z\",\"content\":\"턴 끝나고 전달된 메시지\"}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-07-08T10:00:04.000Z\"}\n",
+            "{\"type\":\"user\",\"timestamp\":\"2026-07-08T10:00:05.000Z\",\"message\":{\"role\":\"user\",\"content\":\"턴 끝나고 전달된 메시지\"}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-07-08T10:00:06.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"답변\"}]}}\n"
+        )).unwrap();
+        let (msgs, _next, _active) = read_transcript(f.to_str().unwrap(), 0);
+        let texts: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["작업 중에 입력한 메시지", "턴 끝나고 전달된 메시지", "답변"]);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "user");
+        // 페이지 경로도 동일 규칙
+        let p = read_transcript_page(f.to_str().unwrap(), Some(7), 50, 3600);
+        let ptexts: Vec<&str> = p.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(ptexts, vec!["작업 중에 입력한 메시지", "턴 끝나고 전달된 메시지", "답변"]);
+    }
+    #[test]
+    fn noise_and_meta_user_lines_hidden() {
+        let dir = std::env::temp_dir().join("awb_tx_noise"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("n1.jsonl");
+        std::fs::write(&f, concat!(
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"진짜 질문\"}}\n",
+            // 백그라운드 에이전트 완료 요약 — Claude 생성 내용이 user 라인으로 기록됨
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<task-notification>\\n<task-id>a</task-id>\\n<summary>에이전트 요약</summary>\"}}\n",
+            // 스킬/훅 주입 본문(isMeta)과 서브에이전트 사이드체인
+            "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"# 스킬 본문\"}]}}\n",
+            "{\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":\"에이전트 내부 프롬프트\"}}\n",
+            // 슬래시 커맨드 래퍼
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>ok</local-command-stdout>\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"진짜 답변\"}]}}\n"
+        )).unwrap();
+        let (msgs, _next, _active) = read_transcript(f.to_str().unwrap(), 0);
+        let texts: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["진짜 질문", "진짜 답변"]);
     }
     #[test]
     fn parses_user_and_assistant_lines() {
