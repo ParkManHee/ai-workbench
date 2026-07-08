@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { Preflight, Project } from "../src/lib/types";
 import { clearSession, loadSession, type Session } from "../src/store/session";
@@ -28,6 +29,7 @@ function preflightText(preflight: Preflight | null): string {
 }
 
 export default function Index() {
+  const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and no session (redirecting)
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -119,6 +121,7 @@ export default function Index() {
         <FlatList
           data={projects}
           keyExtractor={(item) => item.name}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
           ListEmptyComponent={
             <View style={styles.center}>
