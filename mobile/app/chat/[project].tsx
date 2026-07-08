@@ -105,10 +105,13 @@ export default function Chat() {
 
   // Poll a resumed session that's actively running elsewhere (PC), appending
   // any new transcript lines. Skips a tick while a local run is in flight.
+  const pollBusyRef = useRef(false);
   function startPoll(p: PC) {
     if (pollRef.current || !session) return;
     pollRef.current = setInterval(async () => {
       if (!doneRef.current) return; // local run in flight; let its WS drive the UI
+      if (pollBusyRef.current) return; // 이전 틱이 아직 진행 중(대용량/느린 네트워크) — 겹치면 같은 offset을 두 번 읽어 메시지가 중복된다
+      pollBusyRef.current = true;
       try {
         const res = await makeClient(p.baseUrl, p.token).transcript(project, session, nextLineRef.current);
         nextLineRef.current = res.next; // 항상 전진(필터로 메시지가 비어도 재파싱 중복 방지)
@@ -123,6 +126,8 @@ export default function Chat() {
           router.replace("/");
         }
         // else: transient network error, keep polling
+      } finally {
+        pollBusyRef.current = false;
       }
     }, 2000);
   }
