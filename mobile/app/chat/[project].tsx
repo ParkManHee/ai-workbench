@@ -21,7 +21,7 @@ import { getPC, removePC } from "../../src/store/pcs";
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
-  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details };
+  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options };
 }
 
 interface DiffEntry {
@@ -326,9 +326,9 @@ export default function Chat() {
     setImages((prev) => [...prev, ...picked].slice(0, 3));
   }
 
-  async function handleSend() {
+  async function handleSend(overrideText?: string) {
     if (!pc || !client || !project) return;
-    const text = prompt.trim();
+    const text = (overrideText ?? prompt).trim();
     if ((!text && images.length === 0) || chat.running || uploading) return;
 
     setSendError(null);
@@ -539,6 +539,21 @@ export default function Chat() {
       </View>
 
       <KeyboardStickyView>
+        {/* 마지막 메시지가 선택지 질문(AskUserQuestion)이면 탭 한 번으로 답하는 버튼 */}
+        {(() => {
+          const last = chat.messages.at(-1);
+          const opts = !chat.running && last?.role === "assistant" ? last.options ?? [] : [];
+          if (opts.length === 0) return null;
+          return (
+            <View style={styles.optionRow}>
+              {opts.map((o, i) => (
+                <Pressable key={i} style={styles.optionChip} onPress={() => handleSend(o)}>
+                  <Text style={styles.optionChipText}>{o}</Text>
+                </Pressable>
+              ))}
+            </View>
+          );
+        })()}
         {/* 에러는 키보드 위(입력바와 함께)로 — 리스트 아래에 두면 키보드에 가려 안 보인다 */}
         {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
         {images.length > 0 ? (
@@ -586,7 +601,7 @@ export default function Chat() {
         ) : (
           <Pressable
             style={styles.sendButton}
-            onPress={handleSend}
+            onPress={() => handleSend()}
             disabled={(!prompt.trim() && images.length === 0) || uploading}
           >
             <Text style={styles.buttonText}>{uploading ? "업로드…" : "전송"}</Text>
@@ -624,6 +639,29 @@ const styles = StyleSheet.create({
   },
   list: {
     flex: 1,
+  },
+  optionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#ccc",
+    backgroundColor: "#fafafa",
+  },
+  optionChip: {
+    backgroundColor: "#eef4ff",
+    borderColor: "#2f6fed",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  optionChipText: {
+    color: "#2f6fed",
+    fontSize: 13,
+    fontWeight: "600",
   },
   jumpDownButton: {
     position: "absolute",

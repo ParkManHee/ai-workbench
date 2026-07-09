@@ -20,7 +20,15 @@ pub fn transcript_path(slug: &str, session_id: &str) -> String {
 #[derive(Serialize, Clone)]
 pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool, pub waiting: bool }
 #[derive(Serialize, Clone)]
-pub struct TranscriptMsg { pub role: String, pub text: String, pub tools: Vec<String>, pub tool_details: Vec<String> }
+pub struct TranscriptMsg {
+    pub role: String,
+    pub text: String,
+    pub tools: Vec<String>,
+    pub tool_details: Vec<String>,
+    /// AskUserQuestion의 선택지 라벨 — 앱이 탭 한 번으로 답할 수 있게 버튼으로 렌더
+    #[serde(default)]
+    pub options: Vec<String>,
+}
 
 /// UTF-8 안전 절단(문자 기준) — 바이트 슬라이스는 멀티바이트 경계에서 패닉.
 fn truncate_chars(s: &str, max_chars: usize) -> String {
@@ -29,16 +37,32 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     format!("{t}…")
 }
 
-fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>) {
+fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>) {
     match v {
-        Value::String(s) => (s.clone(), vec![], vec![]),
+        Value::String(s) => (s.clone(), vec![], vec![], vec![]),
         Value::Array(arr) => {
-            let mut text = String::new(); let mut tools = vec![]; let mut details = vec![];
+            let mut text = String::new(); let mut tools = vec![]; let mut details = vec![]; let mut options = vec![];
             for it in arr {
                 match it.get("type").and_then(|t| t.as_str()) {
                     Some("text") => if let Some(t) = it.get("text").and_then(|x| x.as_str()) { text.push_str(t); },
                     Some("tool_use") => if let Some(n) = it.get("name").and_then(|x| x.as_str()) {
                         tools.push(n.to_string());
+                        // AskUserQuestion: 질문 텍스트를 본문으로, 선택지 라벨을 버튼(options)으로
+                        if n == "AskUserQuestion" {
+                            if let Some(qs) = it.get("input").and_then(|i| i.get("questions")).and_then(|q| q.as_array()) {
+                                for q in qs {
+                                    if let Some(t) = q.get("question").and_then(|x| x.as_str()) {
+                                        if !text.is_empty() { text.push('\n'); }
+                                        text.push_str(t);
+                                    }
+                                    if let Some(opts) = q.get("options").and_then(|o| o.as_array()) {
+                                        for o in opts {
+                                            if let Some(l) = o.get("label").and_then(|x| x.as_str()) { options.push(l.to_string()); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // 상세(입력 요약): 앱에서 "작업" 버튼 펼침 시 표시
                         let d = it.get("input").map(|i| truncate_chars(&i.to_string(), 300)).unwrap_or_default();
                         details.push(if d.is_empty() { n.to_string() } else { format!("{n}: {d}") });
@@ -46,9 +70,9 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>) {
                     _ => {}
                 }
             }
-            (text, tools, details)
+            (text, tools, details, options)
         }
-        _ => (String::new(), vec![], vec![]),
+        _ => (String::new(), vec![], vec![], vec![]),
     }
 }
 
@@ -70,7 +94,7 @@ fn enqueued_user_text(v: &Value) -> Option<String> {
     Some(c.to_string())
 }
 fn queued_msg(text: String) -> TranscriptMsg {
-    TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![] }
+    TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![], options: vec![] }
 }
 
 /// user/assistant 라인 → 표시 메시지. 메타(스킬/훅 본문)·사이드체인(서브에이전트)·하네스 주입 텍스트는 숨긴다.
@@ -78,10 +102,10 @@ fn parse_msg_line(v: &Value) -> Option<TranscriptMsg> {
     let r = match v.get("type").and_then(|t| t.as_str()) { Some(r @ ("user" | "assistant")) => r, _ => return None };
     if v.get("isMeta").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
     if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
-    let (text, tools, tool_details) = parse_content(v.get("message")?.get("content")?);
+    let (text, tools, tool_details, options) = parse_content(v.get("message")?.get("content")?);
     if text.is_empty() && tools.is_empty() { return None; }
     if r == "user" && is_noise_text(&text) { return None; }
-    Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details })
+    Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details, options })
 }
 
 /// enqueue로 이미 표시한 메시지가 턴 종료 후 실제 user 라인으로 재기록(dequeue)된 경우 중복 억제.
@@ -353,6 +377,19 @@ mod tests {
         let p = read_transcript_page(f.to_str().unwrap(), Some(7), 50, 3600);
         let ptexts: Vec<&str> = p.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(ptexts, vec!["작업 중에 입력한 메시지", "턴 끝나고 전달된 메시지", "답변"]);
+    }
+    #[test]
+    fn ask_user_question_yields_text_and_options() {
+        let dir = std::env::temp_dir().join("awb_tx_ask"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a1.jsonl");
+        std::fs::write(&f, concat!(
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"AskUserQuestion\",",
+            "\"input\":{\"questions\":[{\"question\":\"어느 방식으로 진행할까요?\",\"options\":[{\"label\":\"A안\",\"description\":\"...\"},{\"label\":\"B안\",\"description\":\"...\"}]}]}}]}}\n"
+        )).unwrap();
+        let (msgs, _n, _a) = read_transcript(f.to_str().unwrap(), 0);
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].text.contains("어느 방식으로"));
+        assert_eq!(msgs[0].options, vec!["A안".to_string(), "B안".to_string()]);
     }
     #[test]
     fn noise_and_meta_user_lines_hidden() {
