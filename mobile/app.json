@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "AI Workbench",
+    "slug": "ai-workbench-mobile",
+    "version": "1.0.0",
+    "scheme": "awb",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.aiworkbench.awb",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "AI Workbench에서 QR 코드를 스캔하기 위해 카메라 접근이 필요합니다."
+        }
+      ],
+      "expo-notifications",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "AI Workbench에서 첨부할 이미지를 선택하기 위해 사진 접근이 필요합니다."
+        }
+      ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3076c64c-8faa-421b-89f6-b9d9844ccd10"
+      }
+    },
+    "owner": "parkmanhee"
+  }
+}
