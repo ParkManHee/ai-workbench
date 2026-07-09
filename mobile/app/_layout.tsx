@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Stack, router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import * as Notifications from "expo-notifications";
@@ -35,6 +36,8 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
+      {/* 엣지-투-엣지에서 상태바 아이콘(시계·배터리 등)이 밝은 배경에 묻히지 않게 어두운 스타일 명시 */}
+      <StatusBar style="dark" />
       <KeyboardProvider>
         <Stack>
           <Stack.Screen name="index" options={{ title: "PC" }} />
