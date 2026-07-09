@@ -19,6 +19,16 @@ import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/event
 import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 
+/** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
+const PROMPT_PRESETS = [
+  "이어서 진행해줘",
+  "현재 상황 요약해줘",
+  "테스트 돌려줘",
+  "코드리뷰 해줘",
+  "커밋해줘",
+  "작업로그 갱신해줘",
+];
+
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
   return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options };
@@ -584,6 +594,16 @@ export default function Chat() {
             </View>
           );
         })()}
+        {/* 프리셋: 입력이 비어 있을 때만 — 탭하면 입력창에 채워져 수정 후 전송 */}
+        {!prompt && !chat.running && images.length === 0 ? (
+          <View style={styles.optionRow}>
+            {PROMPT_PRESETS.map((p, i) => (
+              <Pressable key={i} style={styles.presetChip} onPress={() => setPrompt(p)}>
+                <Text style={styles.presetChipText}>{p}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {/* 에러는 키보드 위(입력바와 함께)로 — 리스트 아래에 두면 키보드에 가려 안 보인다 */}
         {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
         {images.length > 0 ? (
@@ -692,6 +712,18 @@ const styles = StyleSheet.create({
     color: "#2f6fed",
     fontSize: 13,
     fontWeight: "600",
+  },
+  presetChip: {
+    backgroundColor: "#f2f2f2",
+    borderColor: "#bbb",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+  },
+  presetChipText: {
+    color: "#555",
+    fontSize: 12,
   },
   jumpDownButton: {
     position: "absolute",
