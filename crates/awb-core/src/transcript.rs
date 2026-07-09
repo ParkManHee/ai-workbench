@@ -12,6 +12,10 @@ pub fn safe_session_id(s: &str) -> bool {
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 fn home() -> String { std::env::var("HOME").unwrap_or_default() }
 fn projects_root() -> String { format!("{}/.claude/projects", home()) }
+/// 세션 트랜스크립트 파일 경로 — 데몬 라우트·데스크톱 앱 공용.
+pub fn transcript_path(slug: &str, session_id: &str) -> String {
+    format!("{}/{}/{}.jsonl", projects_root(), slug, session_id)
+}
 
 #[derive(Serialize, Clone)]
 pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool, pub waiting: bool }

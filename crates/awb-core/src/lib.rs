@@ -6,5 +6,6 @@ pub mod preflight;
 pub mod runner;
 pub mod runlog;
 pub mod scan;
+pub mod transcript;
 pub mod shell_env;
 pub mod worklog;

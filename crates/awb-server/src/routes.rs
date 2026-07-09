@@ -41,7 +41,7 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
     let projects = awb_core::scan::scan_roots(&st.roots);
     let dtos = projects.into_iter().map(|p| {
         let badge = awb_core::worklog::badge_for(&p.name);
-        let agent_status = crate::transcript::project_status(&crate::transcript::project_slug(&p.path));
+        let agent_status = awb_core::transcript::project_status(&awb_core::transcript::project_slug(&p.path));
         ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status }
     }).collect();
     Json(dtos)
@@ -145,30 +145,30 @@ pub async fn info_handler() -> Json<InfoDto> {
     Json(InfoDto { hostname: resolve_hostname() })
 }
 
-pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<crate::transcript::SessionInfo>>, StatusCode> {
+pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(crate::transcript::list_sessions(&crate::transcript::project_slug(&proj.path))))
+    Ok(Json(awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path))))
 }
 
 #[derive(serde::Deserialize)]
 pub struct TxQuery { #[serde(default)] pub from: usize, pub tail: Option<u8>, pub until: Option<usize>, pub limit: Option<usize> }
 
 pub async fn transcript_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Query(q): Query<TxQuery>) -> Result<Json<serde_json::Value>, StatusCode> {
-    if !crate::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    let slug = crate::transcript::project_slug(&proj.path);
+    let slug = awb_core::transcript::project_slug(&proj.path);
     let path = format!("{}/.claude/projects/{}/{}.jsonl", std::env::var("HOME").unwrap_or_default(), slug, session_id);
     if q.tail == Some(1) {
         // 최초 로드: 최근 1시간(최대 limit, 기본 100), 없으면 마지막 20개 폴백
-        let page = crate::transcript::read_transcript_page(&path, None, q.limit.unwrap_or(100), 3600);
+        let page = awb_core::transcript::read_transcript_page(&path, None, q.limit.unwrap_or(100), 3600);
         return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active })));
     }
     if let Some(u) = q.until {
         // 위로 스크롤: u 이전 메시지 마지막 limit(기본 50)개
-        let page = crate::transcript::read_transcript_page(&path, Some(u), q.limit.unwrap_or(50), 3600);
+        let page = awb_core::transcript::read_transcript_page(&path, Some(u), q.limit.unwrap_or(50), 3600);
         return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active })));
     }
-    let (msgs, next, active) = crate::transcript::read_transcript(&path, q.from);
+    let (msgs, next, active) = awb_core::transcript::read_transcript(&path, q.from);
     Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active })))
 }
 

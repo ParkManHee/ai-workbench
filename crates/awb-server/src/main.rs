@@ -8,7 +8,6 @@ mod routes;
 mod runreg;
 mod sessions;
 mod streamevt;
-mod transcript;
 mod ws;
 
 #[tokio::main]
