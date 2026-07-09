@@ -42,15 +42,20 @@ pub fn should_push(reg: &crate::runreg::RunRegistry, run_id: &str) -> bool {
     reg.mark_notified(run_id)
 }
 
+/// 발송 페이로드(순수) — data는 앱이 알림 탭 시 해당 대화방으로 딥링크하는 데 쓴다.
+pub fn build_messages(tokens: &[String], title: &str, body: &str, data: &serde_json::Value) -> Vec<serde_json::Value> {
+    tokens
+        .iter()
+        .map(|t| serde_json::json!({"to": t, "title": title, "body": body, "data": data}))
+        .collect()
+}
+
 /// Expo 푸시 발송(curl 서브프로세스). 실패는 로그만 남기고 패닉하지 않는다.
-pub fn send(tokens: &[String], title: &str, body: &str) {
+pub fn send(tokens: &[String], title: &str, body: &str, data: &serde_json::Value) {
     if tokens.is_empty() {
         return;
     }
-    let msgs: Vec<_> = tokens
-        .iter()
-        .map(|t| serde_json::json!({"to": t, "title": title, "body": body}))
-        .collect();
+    let msgs = build_messages(tokens, title, body, data);
     let payload = serde_json::to_string(&msgs).unwrap_or_default();
     match std::process::Command::new("curl")
         .args([
@@ -97,7 +102,14 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                         if status.verdict.starts_with("success") { "✅" } else { "❌" },
                         meta.project
                     );
-                    send(&tokens, &title, &status.verdict);
+                    // 딥링크 데이터: 앱이 hostname으로 PC를 찾고 해당 프로젝트 대화방을 연다
+                    let data = serde_json::json!({
+                        "hostname": crate::routes::resolve_hostname(),
+                        "project": meta.project,
+                        "path": meta.workdir,
+                        "session": st.sessions.get(&meta.project),
+                    });
+                    send(&tokens, &title, &status.verdict, &data);
                 }
                 st.runs.remove(&run_id); // 완료된 run은 레지스트리에서 제거(취소/완료 후 무한 누적 방지)
                 return;
@@ -129,6 +141,16 @@ mod tests {
             RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
+    }
+
+    #[test]
+    fn build_messages_includes_deeplink_data() {
+        let data = serde_json::json!({"hostname": "mac", "project": "p1", "path": "/x", "session": "s1"});
+        let msgs = build_messages(&["ExponentPushToken[a]".into()], "✅ p1", "success", &data);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["to"], "ExponentPushToken[a]");
+        assert_eq!(msgs[0]["data"]["project"], "p1");
+        assert_eq!(msgs[0]["data"]["session"], "s1");
     }
 
     #[test]

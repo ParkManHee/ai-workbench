@@ -22,6 +22,25 @@ async function registerPush(pc: PC): Promise<void> {
   }
 }
 
+/** 알림 탭 → 해당 PC의 프로젝트 대화방으로 딥링크. 데몬이 data에 hostname/project/path/session을 담아 보낸다. */
+async function openFromNotification(data: Record<string, unknown> | undefined): Promise<void> {
+  const project = typeof data?.project === "string" ? data.project : null;
+  if (!project) return;
+  const pcs = await loadPCs();
+  // 페어링 시 label을 데몬 hostname으로 저장하므로 hostname으로 PC를 찾는다(없으면 첫 PC)
+  const pc = pcs.find((p) => p.label === data?.hostname) ?? pcs[0];
+  if (!pc) return;
+  router.push({
+    pathname: "/chat/[project]",
+    params: {
+      project,
+      pc: pc.id,
+      path: typeof data?.path === "string" ? data.path : "",
+      ...(typeof data?.session === "string" && data.session ? { session: data.session } : {}),
+    },
+  });
+}
+
 export default function RootLayout() {
   useEffect(() => {
     loadPCs().then((pcs) => {
@@ -32,6 +51,15 @@ export default function RootLayout() {
       // Best-effort: register push for the first PC only (v1 simplification).
       registerPush(pcs[0]);
     });
+    // 앱이 떠 있거나 백그라운드일 때 알림 탭
+    const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
+      openFromNotification(resp.notification.request.content.data as Record<string, unknown>);
+    });
+    // 알림 탭으로 콜드 스타트한 경우
+    Notifications.getLastNotificationResponseAsync().then((resp) => {
+      if (resp) openFromNotification(resp.notification.request.content.data as Record<string, unknown>);
+    });
+    return () => sub.remove();
   }, []);
 
   return (
