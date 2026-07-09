@@ -311,6 +311,11 @@ export default function Chat() {
     if ((!text && images.length === 0) || chat.running || uploading) return;
 
     setSendError(null);
+    // 이전 버전 코드로 선택된 이미지(base64 없음)가 핫리로드로 상태에 남아있을 수 있다
+    if (images.some((im) => !im.base64)) {
+      setSendError("이미지 정보가 유효하지 않습니다. 첨부를 ✕로 지우고 다시 선택해주세요.");
+      return;
+    }
     // 이미지 먼저 업로드 — 실패하면 입력을 유지한 채 전송 중단(부분 업로드로 실행하지 않음)
     const paths: string[] = [];
     if (images.length > 0) {
