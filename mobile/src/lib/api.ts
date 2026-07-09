@@ -49,7 +49,9 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
      * ("unsupported FormData part implementation"), 로컬 uri의 blob() 읽기도 안 되므로
      * 픽커에서 받은 base64를 Uint8Array로 디코드해 본문으로 보낸다. */
     upload: async (base64: string, ext: string): Promise<{ path: string }> => {
-      const bin = atob(base64);
+      // Android의 Base64 인코더는 76자마다 줄바꿈을 넣을 수 있고, Hermes atob는
+      // 공백이 섞이면 "not a valid base64 encoded string length"로 거부한다 — 제거 후 디코드.
+      const bin = atob(base64.replace(/[\r\n\s]/g, ""));
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       const r = await f(`${baseUrl}/upload?ext=${encodeURIComponent(ext)}`, {
