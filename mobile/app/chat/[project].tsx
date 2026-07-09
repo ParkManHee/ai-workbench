@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
+import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
 
@@ -49,6 +50,30 @@ interface DiffSummary {
 export default function Chat() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
+  // 어시스턴트 말풍선의 마크다운 렌더 스타일(테마 연동) — **, ``` 등이 원문으로 노출되지 않게 한다
+  const mdStyles = useMemo(
+    () => ({
+      body: { color: t.text, fontSize: 15 },
+      paragraph: { marginTop: 0, marginBottom: 6 },
+      heading1: { color: t.text, fontSize: 19, fontWeight: "700" as const, marginVertical: 4 },
+      heading2: { color: t.text, fontSize: 17, fontWeight: "700" as const, marginVertical: 4 },
+      heading3: { color: t.text, fontSize: 15, fontWeight: "700" as const, marginVertical: 3 },
+      strong: { fontWeight: "700" as const },
+      link: { color: t.accent },
+      bullet_list_icon: { color: t.text },
+      ordered_list_icon: { color: t.text },
+      code_inline: { backgroundColor: t.mono, color: t.text, fontFamily: "monospace", borderRadius: 4 },
+      fence: { backgroundColor: t.mono, borderColor: t.border, borderRadius: 6, padding: 8, marginVertical: 4 },
+      code_block: { backgroundColor: t.mono, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: 11 },
+      blockquote: { backgroundColor: t.box, borderLeftColor: t.border, marginVertical: 4 },
+      hr: { backgroundColor: t.border },
+      table: { borderColor: t.border },
+      th: { color: t.text, borderColor: t.border },
+      td: { color: t.text, borderColor: t.border },
+      tr: { borderColor: t.border },
+    }),
+    [t]
+  );
   const { project, pc: pcId, path, session } = useLocalSearchParams<{
     project: string;
     pc: string;
@@ -534,7 +559,11 @@ export default function Chat() {
                   ))
                 : null}
               {hasText ? (
-                <Text style={m.role === "user" ? styles.userText : styles.assistantText}>{m.text}</Text>
+                m.role === "user" ? (
+                  <Text style={styles.userText}>{m.text}</Text>
+                ) : (
+                  <Markdown style={mdStyles}>{m.text}</Markdown>
+                )
               ) : null}
             </View>
           );
