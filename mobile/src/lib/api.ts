@@ -44,13 +44,17 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       return (r as any).json() as Promise<{ run_id: string; log: string }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
-    /** 첨부 이미지 업로드: 로컬 파일 uri를 blob으로 읽어 raw bytes 전송 → Mac 저장 절대경로를 반환받는다. */
+    /** 첨부 이미지 업로드 → Mac 저장 절대경로를 반환받는다.
+     * RN의 fetch는 로컬 content://·file:// uri를 JS에서 읽지 못하므로(blob() 실패),
+     * FormData {uri,name,type} 파트로 넘겨 네이티브가 파일을 직접 스트리밍하게 한다. */
     upload: async (uri: string, ext: string): Promise<{ path: string }> => {
-      const blob = await (await f(uri)).blob();
+      const form = new FormData();
+      const mime = ext === "jpg" ? "jpeg" : ext;
+      form.append("file", { uri, name: `image.${ext}`, type: `image/${mime}` } as any);
       const r = await f(`${baseUrl}/upload?ext=${encodeURIComponent(ext)}`, {
         method: "POST",
-        headers: { ...h, "Content-Type": "application/octet-stream" },
-        body: blob,
+        headers: h, // Content-Type은 RN이 boundary 포함해 자동 설정
+        body: form,
       } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, "/upload");
       return (r as any).json();
