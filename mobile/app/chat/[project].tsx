@@ -320,7 +320,8 @@ export default function Chat() {
           router.replace("/");
           return;
         }
-        setSendError("이미지 업로드 실패. 다시 시도해주세요.");
+        console.log("[awb] upload failed:", e); // adb logcat(ReactNativeJS)에서 원인 확인용
+        setSendError(`이미지 업로드 실패: ${e instanceof Error ? e.message : String(e)}`);
         return;
       } finally {
         setUploading(false);
@@ -508,9 +509,9 @@ export default function Chat() {
       ) : null}
       </View>
 
-      {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
-
       <KeyboardStickyView>
+        {/* 에러는 키보드 위(입력바와 함께)로 — 리스트 아래에 두면 키보드에 가려 안 보인다 */}
+        {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
         {images.length > 0 ? (
           <View style={styles.attachRow}>
             {images.map((im, i) => (
