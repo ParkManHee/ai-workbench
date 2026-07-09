@@ -59,8 +59,8 @@ export default function Chat() {
   const [plan, setPlan] = useState(false);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행
-  const [images, setImages] = useState<{ uri: string; ext: string }[]>([]);
+  // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
+  const [images, setImages] = useState<{ uri: string; ext: string; base64: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   // 툴(Edit/Bash 등) 상세는 기본 접힘 — "🔧 작업 N" 버튼 탭 시에만 펼침(메시지 index 기준)
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
@@ -291,14 +291,17 @@ export default function Chat() {
       allowsMultipleSelection: true,
       selectionLimit: 3,
       quality: 0.8,
+      base64: true, // 업로드는 base64 → bytes 경로(expo 전역 fetch가 uri FormData 파트 미지원)
     });
     if (res.canceled || !res.assets) return;
-    const picked = res.assets.map((a) => {
-      // 서버 화이트리스트(jpg/jpeg/png/webp)에 맞춰 확장자 결정 — 모르면 jpg
-      let ext = (a.mimeType?.split("/")[1] ?? a.fileName?.split(".").pop() ?? "jpg").toLowerCase();
-      if (!["jpg", "jpeg", "png", "webp"].includes(ext)) ext = "jpg";
-      return { uri: a.uri, ext };
-    });
+    const picked = res.assets
+      .filter((a) => !!a.base64)
+      .map((a) => {
+        // 서버 화이트리스트(jpg/jpeg/png/webp)에 맞춰 확장자 결정 — 모르면 jpg
+        let ext = (a.mimeType?.split("/")[1] ?? a.fileName?.split(".").pop() ?? "jpg").toLowerCase();
+        if (!["jpg", "jpeg", "png", "webp"].includes(ext)) ext = "jpg";
+        return { uri: a.uri, ext, base64: a.base64! };
+      });
     setImages((prev) => [...prev, ...picked].slice(0, 3));
   }
 
@@ -313,7 +316,7 @@ export default function Chat() {
     if (images.length > 0) {
       setUploading(true);
       try {
-        for (const im of images) paths.push((await client.upload(im.uri, im.ext)).path);
+        for (const im of images) paths.push((await client.upload(im.base64, im.ext)).path);
       } catch (e) {
         if (isUnauthorized(e)) {
           await removePC(pc.id);

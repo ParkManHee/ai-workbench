@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 awb-core = { path = "../awb-core" }
-axum = { version = "0.8", features = ["ws", "multipart"] }
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }
 serde = { version = "1", features = ["derive"] }

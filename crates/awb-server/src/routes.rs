@@ -180,22 +180,15 @@ pub const UPLOAD_LIMIT_BYTES: usize = 15 * 1024 * 1024;
 
 /// 폰 첨부 이미지 업로드: raw bytes → uploads_dir에 저장, 절대경로 반환.
 /// 파일명은 서버가 생성(시각-pid-순번.확장자) — 클라이언트가 경로를 주입할 수 없다.
-pub async fn upload_handler(State(st): State<AppState>, Query(q): Query<UploadQuery>, mut multipart: axum::extract::Multipart) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+pub async fn upload_handler(State(st): State<AppState>, Query(q): Query<UploadQuery>, body: axum::body::Bytes) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ext = q.ext.to_ascii_lowercase();
     if !UPLOAD_EXTS.contains(&ext.as_str()) {
         return Err((StatusCode::BAD_REQUEST, format!("허용되지 않는 확장자: {ext} (jpg/jpeg/png/webp)")));
     }
-    // multipart(file 필드) 수신 — RN fetch는 로컬 파일 uri를 JS에서 읽지 못해
-    // FormData {uri,name,type} 파트로 보내는 것이 유일하게 안정적인 경로다.
-    let mut body: Option<axum::body::Bytes> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, format!("multipart 파싱 실패: {e}")))? {
-        if field.name() == Some("file") {
-            body = Some(field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, format!("파일 수신 실패: {e}")))?);
-            break;
-        }
-    }
-    let body = body.ok_or((StatusCode::BAD_REQUEST, "file 필드 없음".to_string()))?;
+    // raw bytes 수신. 클라이언트는 픽커 base64 → Uint8Array 본문(expo/fetch WinterCG).
+    // multipart는 쓰지 않는다: expo 전역 fetch가 RN식 {uri,...} FormData 파트를 지원하지 않고
+    // ("unsupported FormData part implementation"), RN fetch는 로컬 uri의 blob()을 읽지 못한다.
     if body.is_empty() { return Err((StatusCode::BAD_REQUEST, "빈 본문".into())); }
     std::fs::create_dir_all(&st.uploads_dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("업로드 디렉터리 생성 실패: {e}")))?;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -276,18 +269,6 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// RN FormData 업로드와 동일한 multipart 본문 구성
-    fn multipart_req(uri: &str, token: &str, data: &[u8]) -> Request<Body> {
-        let b = "AWBTESTBOUNDARY";
-        let mut body = format!("--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
-        body.extend_from_slice(data);
-        body.extend_from_slice(format!("\r\n--{b}--\r\n").as_bytes());
-        Request::builder().method("POST").uri(uri)
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", format!("multipart/form-data; boundary={b}"))
-            .body(Body::from(body)).unwrap()
-    }
-
     #[tokio::test]
     async fn upload_saves_bytes_and_returns_path() {
         let devices_path = tmp("awb_routes_devices_upload_ok.json"); let _ = std::fs::remove_file(&devices_path);
@@ -295,7 +276,9 @@ mod tests {
         let token = "tok-upload-ok";
         state.devices.add(token, "test-device");
         let app = crate::routes::router(state);
-        let res = app.oneshot(multipart_req("/upload?ext=png", token, &[1u8, 2, 3, 4])).await.unwrap();
+        let res = app.oneshot(Request::builder().method("POST").uri("/upload?ext=png")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(vec![1u8, 2, 3, 4])).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
