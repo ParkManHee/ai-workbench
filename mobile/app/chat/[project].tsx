@@ -76,7 +76,9 @@ export default function Chat() {
   const wsRef = useRef<WebSocket | null>(null);
   const runIdRef = useRef<string | null>(null);
   const doneRef = useRef(true); // true = no run currently in flight
-  const reconnectedRef = useRef(false);
+  // 연속 재접속 한도 — 데이터 수신 시 리셋되므로 긴 실행 중 산발적 순단은 계속 복구된다.
+  const MAX_RECONNECTS = 5;
+  const reconnectsRef = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
   // 최초 콘텐츠 렌더(과거 대화 로드 포함)는 즉시 맨 아래로 점프하고,
   // 이후(스트리밍 등)부터는 부드럽게 스크롤한다.
@@ -234,6 +236,7 @@ export default function Chat() {
       } catch {
         return; // ignore malformed frames
       }
+      reconnectsRef.current = 0; // 데이터가 흐르면 재접속 카운터 리셋(긴 실행 중 여러 번 끊겨도 복구)
       setChat((prev) => reduceEvent(prev, ev));
       if (ev.kind === "done") {
         doneRef.current = true;
@@ -248,21 +251,23 @@ export default function Chat() {
     ws.onclose = () => {
       if (wsRef.current !== ws) return; // superseded by a newer run/reconnect
       if (doneRef.current) return;
-      if (!reconnectedRef.current) {
-        // v1 simplification: one reconnect attempt, offset=0 replay is acceptable.
-        // Drop the partial assistant bubble first so the replayed tokens rebuild
-        // it cleanly instead of doubling onto the text already shown.
-        reconnectedRef.current = true;
+      if (reconnectsRef.current < MAX_RECONNECTS) {
+        // 절전/네트워크 순단으로 자주 끊기므로 백오프 재접속. offset=0 replay 방식이라
+        // 스트리밍 중이던 assistant 말풍선을 지워 재생 토큰이 이중으로 붙지 않게 한다.
+        reconnectsRef.current += 1;
+        const delay = Math.min(1000 * reconnectsRef.current, 5000);
         setChat((prev) => {
           const msgs = [...prev.messages];
           if (msgs.at(-1)?.role === "assistant") msgs.pop();
           return { ...initialChatState(), messages: msgs };
         });
-        connectWs(runId, p);
+        setTimeout(() => {
+          if (wsRef.current === ws && !doneRef.current) connectWs(runId, p);
+        }, delay);
         return;
       }
       doneRef.current = true;
-      setChat((prev) => ({ ...prev, running: false, error: prev.error ?? "연결이 끊겼습니다." }));
+      setChat((prev) => ({ ...prev, running: false, error: prev.error ?? "연결이 끊겼습니다. 대화방을 다시 열면 진행 상황이 표시됩니다." }));
     };
 
     ws.onerror = () => {
@@ -326,7 +331,7 @@ export default function Chat() {
     setDiff(null);
     setPrompt("");
     setImages([]);
-    reconnectedRef.current = false;
+    reconnectsRef.current = 0;
 
     // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
     const fullPrompt = paths.length
