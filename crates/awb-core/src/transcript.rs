@@ -18,7 +18,17 @@ pub fn transcript_path(slug: &str, session_id: &str) -> String {
 }
 
 #[derive(Serialize, Clone)]
-pub struct SessionInfo { pub session_id: String, pub updated: u64, pub preview: String, pub count: u32, pub active: bool, pub waiting: bool }
+pub struct SessionInfo {
+    pub session_id: String,
+    pub updated: u64,
+    /// 최근 사용자 질문 요약(한 줄)
+    pub preview: String,
+    /// 최근 어시스턴트 답변 요약(한 줄)
+    pub answer_preview: String,
+    pub count: u32,
+    pub active: bool,
+    pub waiting: bool,
+}
 #[derive(Serialize, Clone)]
 pub struct TranscriptMsg {
     pub role: String,
@@ -258,6 +268,17 @@ pub fn project_status_in(dir: &str) -> Option<String> {
     status_from(age, Some(last.role.as_str())).map(|s| s.to_string())
 }
 
+/// 리스트 미리보기용 한 줄 요약: 개행을 공백으로, 마크다운 기호 제거, 60자 절단.
+fn snippet(text: &str) -> String {
+    let cleaned: String = text.chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .filter(|c| !matches!(c, '*' | '`' | '#'))
+        .collect();
+    let t = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s: String = t.chars().take(60).collect();
+    if t.chars().count() > 60 { format!("{s}…") } else { s }
+}
+
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
     let dir = format!("{}/{}", projects_root(), slug);
     let mut out = vec![];
@@ -270,12 +291,14 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
         let updated = e.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
         let (msgs, _n, active) = read_transcript(p.to_str().unwrap_or(""), 0);
-        let preview = msgs.iter().find(|m| m.role == "user").map(|m| {
-            let t: String = m.text.chars().take(60).collect(); t
-        }).unwrap_or_default();
+        // 미리보기: 최근 질문·최근 답변 요약(마지막 것 기준) — 리스트에서 대화의 현재 상태가 보이게
+        let preview = msgs.iter().rev().find(|m| m.role == "user" && !m.text.trim().is_empty())
+            .map(|m| snippet(&m.text)).unwrap_or_default();
+        let answer_preview = msgs.iter().rev().find(|m| m.role == "assistant" && !m.text.trim().is_empty())
+            .map(|m| snippet(&m.text)).unwrap_or_default();
         let age = now().saturating_sub(updated);
         let waiting = !active && status_from(age, msgs.last().map(|m| m.role.as_str())) == Some("waiting");
-        out.push(SessionInfo { session_id: sid, updated, preview, count: msgs.len() as u32, active, waiting });
+        out.push(SessionInfo { session_id: sid, updated, preview, answer_preview, count: msgs.len() as u32, active, waiting });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
     out
