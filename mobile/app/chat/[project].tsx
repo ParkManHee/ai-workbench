@@ -224,6 +224,23 @@ export default function Chat() {
 
   const client = useMemo(() => (pc ? makeClient(pc.baseUrl, pc.token) : null), [pc]);
 
+  // 실행 종료(정상/실패/스트림 포기) 후: 서버 트랜스크립트 기준으로 대화를 다시 맞추고
+  // 실시간 폴을 재개한다 — handleSend가 stopPoll()한 채 방치되면 이후 PC 쪽 대화가
+  // 하나도 안 올라오는 "얼어붙은 방"이 된다(이번 버그). 서버 진실로 교체하므로
+  // WS로 이미 그린 내용과 중복되지 않는다.
+  async function reloadTailAndPoll(p: PC) {
+    if (!session) return;
+    try {
+      const res = await makeClient(p.baseUrl, p.token).transcriptTail(project, session);
+      nextLineRef.current = res.next;
+      prevRef.current = res.prev;
+      setChat((prev) => ({ ...prev, messages: res.messages.map(toChatMsg) }));
+      if (res.active) startPoll(p);
+    } catch {
+      // best-effort: 다음 진입 시 초기 로드가 복구한다
+    }
+  }
+
   function connectWs(runId: string, p: PC) {
     doneRef.current = false;
     const ws = new WebSocket(streamUrl(p.baseUrl, runId, 0, p.token));
@@ -242,9 +259,11 @@ export default function Chat() {
         doneRef.current = true;
         fetchDiff(p);
         ws.close();
+        reloadTailAndPoll(p);
       } else if (ev.kind === "error") {
         doneRef.current = true;
         ws.close();
+        reloadTailAndPoll(p);
       }
     };
 
@@ -266,8 +285,10 @@ export default function Chat() {
         }, delay);
         return;
       }
+      // 스트림 포기: 실행은 계속될 수 있으므로 트랜스크립트 폴로 전환해 진행 내용을 보여준다
       doneRef.current = true;
-      setChat((prev) => ({ ...prev, running: false, error: prev.error ?? "연결이 끊겼습니다. 대화방을 다시 열면 진행 상황이 표시됩니다." }));
+      setChat((prev) => ({ ...prev, running: false, error: prev.error ?? "스트림이 끊겨 기록 보기로 전환했습니다." }));
+      reloadTailAndPoll(p);
     };
 
     ws.onerror = () => {
