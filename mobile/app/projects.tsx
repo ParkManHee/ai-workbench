@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { PC, Preflight, Project } from "../src/lib/types";
 import { getPC, removePC } from "../src/store/pcs";
+import { useTheme, type Theme } from "../src/lib/theme";
 
 function badgeText(project: Project): string | null {
   const b = project.badge;
@@ -29,6 +30,8 @@ function preflightText(preflight: Preflight | null): string {
 }
 
 export default function Projects() {
+  const t = useTheme();
+  const styles = useMemo(() => makeStyles(t), [t]);
   const { pc: pcId } = useLocalSearchParams<{ pc: string }>();
   const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and no PC found (redirecting)
@@ -165,7 +168,7 @@ export default function Projects() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -178,18 +181,20 @@ const styles = StyleSheet.create({
   },
   preflightBanner: {
     padding: 8,
-    backgroundColor: "#f0f0f0",
+    backgroundColor: t.box,
   },
   preflightText: {
     textAlign: "center",
+    color: t.text,
   },
   errorText: {
     textAlign: "center",
+    color: t.text,
   },
   row: {
     padding: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ccc",
+    borderBottomColor: t.border,
   },
   nameRow: {
     flexDirection: "row",
@@ -200,6 +205,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     flexShrink: 1,
+    color: t.text,
   },
   statusDot: {
     fontSize: 12,
@@ -207,10 +213,11 @@ const styles = StyleSheet.create({
   },
   path: {
     fontSize: 12,
-    color: "#666",
+    color: t.subtext,
     marginTop: 2,
   },
   badge: {
     marginTop: 4,
+    color: t.text,
   },
 });

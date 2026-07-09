@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useColorScheme } from "react-native";
 import { Stack, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -62,12 +63,19 @@ export default function RootLayout() {
     return () => sub.remove();
   }, []);
 
+  const dark = useColorScheme() === "dark";
   return (
     <SafeAreaProvider>
-      {/* 엣지-투-엣지에서 상태바 아이콘(시계·배터리 등)이 밝은 배경에 묻히지 않게 어두운 스타일 명시 */}
-      <StatusBar style="dark" />
+      {/* 상태바 아이콘: 시스템 테마에 맞춰 자동(라이트→어두운 아이콘, 다크→밝은 아이콘) */}
+      <StatusBar style="auto" />
       <KeyboardProvider>
-        <Stack>
+        <Stack
+          screenOptions={{
+            headerStyle: { backgroundColor: dark ? "#1c1c1e" : "#ffffff" },
+            headerTintColor: dark ? "#e8e8e8" : "#111111",
+            contentStyle: { backgroundColor: dark ? "#121212" : "#ffffff" },
+          }}
+        >
           <Stack.Screen name="index" options={{ title: "PC" }} />
           {/* projects 타이틀은 화면에서 PC label로 동적 설정 */}
           <Stack.Screen name="projects" options={{ title: "프로젝트" }} />

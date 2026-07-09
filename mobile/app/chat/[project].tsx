@@ -18,6 +18,7 @@ import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
+import { useTheme, type Theme } from "../../src/lib/theme";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -46,6 +47,8 @@ interface DiffSummary {
 }
 
 export default function Chat() {
+  const t = useTheme();
+  const styles = useMemo(() => makeStyles(t), [t]);
   const { project, pc: pcId, path, session } = useLocalSearchParams<{
     project: string;
     pc: string;
@@ -642,7 +645,7 @@ export default function Chat() {
           onChangeText={setPrompt}
           editable={!running}
           placeholder="메시지를 입력하세요"
-          placeholderTextColor="#333"
+          placeholderTextColor={t.placeholder}
         />
         {running ? (
           <Pressable style={styles.cancelButton} onPress={handleCancel}>
@@ -663,26 +666,26 @@ export default function Chat() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
   resumeBar: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: "#f7f7f7",
+    backgroundColor: t.box,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ccc",
+    borderBottomColor: t.border,
     gap: 2,
   },
   resumeLabel: {
     fontSize: 11,
-    color: "#666",
+    color: t.subtext,
   },
   resumeCmd: {
     fontSize: 12,
     fontFamily: "monospace",
-    color: "#222",
+    color: t.text,
   },
   listWrap: {
     flex: 1,
@@ -697,32 +700,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ccc",
-    backgroundColor: "#fafafa",
+    borderTopColor: t.border,
+    backgroundColor: t.box,
   },
   optionChip: {
-    backgroundColor: "#eef4ff",
-    borderColor: "#2f6fed",
+    backgroundColor: t.chip,
+    borderColor: t.accent,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
   optionChipText: {
-    color: "#2f6fed",
+    color: t.accent,
     fontSize: 13,
     fontWeight: "600",
   },
   presetChip: {
-    backgroundColor: "#f2f2f2",
-    borderColor: "#bbb",
+    backgroundColor: t.chip,
+    borderColor: t.border,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 14,
     paddingHorizontal: 11,
     paddingVertical: 5,
   },
   presetChipText: {
-    color: "#555",
+    color: t.chipText,
     fontSize: 12,
   },
   jumpDownButton: {
@@ -746,7 +749,7 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     alignSelf: "flex-end",
-    backgroundColor: "#dcefff",
+    backgroundColor: t.bubbleUser,
     borderRadius: 12,
     padding: 10,
     marginVertical: 4,
@@ -754,7 +757,7 @@ const styles = StyleSheet.create({
   },
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: "#f0f0f0",
+    backgroundColor: t.bubbleBot,
     borderRadius: 12,
     padding: 10,
     marginVertical: 4,
@@ -762,9 +765,11 @@ const styles = StyleSheet.create({
   },
   userText: {
     fontSize: 15,
+    color: t.text,
   },
   assistantText: {
     fontSize: 15,
+    color: t.text,
   },
   toolOnlyRow: {
     alignSelf: "flex-start",
@@ -773,7 +778,7 @@ const styles = StyleSheet.create({
   },
   toolButton: {
     alignSelf: "flex-start",
-    backgroundColor: "#e6e6e6",
+    backgroundColor: t.chip,
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -781,13 +786,13 @@ const styles = StyleSheet.create({
   },
   toolButtonText: {
     fontSize: 11,
-    color: "#555",
+    color: t.chipText,
   },
   toolDetail: {
     fontSize: 11,
-    color: "#444",
+    color: t.subtext,
     fontFamily: "monospace",
-    backgroundColor: "#f2f2f2",
+    backgroundColor: t.mono,
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 3,
@@ -800,10 +805,11 @@ const styles = StyleSheet.create({
   },
   verdictText: {
     fontWeight: "600",
+    color: t.text,
   },
   changedFiles: {
     fontSize: 12,
-    color: "#666",
+    color: t.subtext,
   },
   errorText: {
     color: "#c0392b",
@@ -811,7 +817,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   diffBox: {
-    backgroundColor: "#f7f7f7",
+    backgroundColor: t.box,
     borderRadius: 8,
     padding: 10,
     marginTop: 4,
@@ -819,17 +825,18 @@ const styles = StyleSheet.create({
   diffTitle: {
     fontWeight: "600",
     marginBottom: 4,
+    color: t.text,
   },
   diffEntry: {
     fontSize: 12,
-    color: "#444",
+    color: t.text,
     paddingVertical: 2,
   },
   diffText: {
     fontSize: 10,
     fontFamily: "monospace",
-    color: "#333",
-    backgroundColor: "#f0f0f0",
+    color: t.text,
+    backgroundColor: t.mono,
     borderRadius: 6,
     padding: 6,
     marginVertical: 2,
@@ -840,7 +847,7 @@ const styles = StyleSheet.create({
     padding: 8,
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ccc",
+    borderTopColor: t.border,
   },
   attachRow: {
     flexDirection: "row",
@@ -849,8 +856,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ccc",
-    backgroundColor: "#fafafa",
+    borderTopColor: t.border,
+    backgroundColor: t.box,
   },
   thumbWrap: {
     position: "relative",
@@ -859,7 +866,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 8,
-    backgroundColor: "#eee",
+    backgroundColor: t.chip,
   },
   thumbRemove: {
     position: "absolute",
@@ -883,6 +890,7 @@ const styles = StyleSheet.create({
   },
   attachButtonText: {
     fontSize: 20,
+    color: t.text,
   },
   planRow: {
     flexDirection: "row",
@@ -892,7 +900,7 @@ const styles = StyleSheet.create({
   },
   planLabel: {
     fontSize: 13,
-    color: "#333",
+    color: t.text,
   },
   input: {
     flex: 1,
@@ -902,7 +910,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     maxHeight: 120,
-    color: "#111",
+    color: t.inputText,
   },
   sendButton: {
     backgroundColor: "#2f6fed",

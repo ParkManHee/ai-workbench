@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient } from "../../src/lib/api";
 import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
+import { useTheme, type Theme } from "../../src/lib/theme";
 
 /** 대략적인 상대 시간(분/시간/일) 표시, 오래된 항목은 날짜로. unix seconds 입력. */
 function formatUpdated(unixSeconds: number): string {
@@ -29,6 +30,8 @@ function formatUpdated(unixSeconds: number): string {
 }
 
 export default function Sessions() {
+  const t = useTheme();
+  const styles = useMemo(() => makeStyles(t), [t]);
   const { project, pc: pcId, path } = useLocalSearchParams<{
     project: string;
     pc: string;
@@ -160,7 +163,7 @@ export default function Sessions() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -187,11 +190,12 @@ const styles = StyleSheet.create({
   },
   errorText: {
     textAlign: "center",
+    color: t.text,
   },
   row: {
     padding: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ccc",
+    borderBottomColor: t.border,
   },
   rowTop: {
     flexDirection: "row",
@@ -203,13 +207,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     flex: 1,
+    color: t.text,
   },
   activeBadge: {
     fontSize: 12,
   },
   updated: {
     fontSize: 12,
-    color: "#666",
+    color: t.subtext,
     marginTop: 2,
   },
 });

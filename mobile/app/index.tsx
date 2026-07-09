@@ -1,10 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useMemo } from "react";
 import { Alert, Button, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeClient } from "../src/lib/api";
 import type { PC, Project } from "../src/lib/types";
 import { loadPCs, removePC } from "../src/store/pcs";
+import { useTheme, type Theme } from "../src/lib/theme";
 
 function hostOf(baseUrl: string): string {
   return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
@@ -19,6 +20,8 @@ function statusLine(projects: Project[]): string {
 }
 
 export default function Index() {
+  const t = useTheme();
+  const styles = useMemo(() => makeStyles(t), [t]);
   const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and empty (redirecting)
   const [pcs, setPcs] = useState<PC[] | null | undefined>(undefined);
@@ -112,7 +115,7 @@ export default function Index() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -130,24 +133,26 @@ const styles = StyleSheet.create({
   row: {
     padding: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ccc",
+    borderBottomColor: t.border,
   },
   label: {
     fontSize: 16,
     fontWeight: "600",
+    color: t.text,
   },
   host: {
     fontSize: 12,
-    color: "#666",
+    color: t.subtext,
     marginTop: 2,
   },
   statusLine: {
     fontSize: 13,
     marginTop: 6,
+    color: t.text,
   },
   statusIdle: {
     fontSize: 12,
-    color: "#999",
+    color: t.subtext,
     marginTop: 6,
   },
 });
