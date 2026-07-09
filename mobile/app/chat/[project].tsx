@@ -150,6 +150,11 @@ export default function Chat() {
   const [loadingOlder, setLoadingOlder] = useState(false); // 상단 스피너 표시용
   // 자동 스크롤은 "메시지 개수가 늘었을 때"만 — 툴 펼침/접힘 등 크기 변화로는 안 튀게.
   const lastMsgCountRef = useRef(0);
+  // prepend 시 보던 위치 복원용(Android는 maintainVisibleContentPosition이 동작하지 않아 수동 보정).
+  const scrollYRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  // 위로 올라가 있을 때 맨아래로 점프하는 플로팅 버튼
+  const [showJumpDown, setShowJumpDown] = useState(false);
 
   async function loadOlder() {
     if (!pc || !session || loadingOlderRef.current || prevRef.current == null) return;
@@ -321,24 +326,31 @@ export default function Chat() {
           </Text>
         </View>
       ) : null}
+      <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
         style={styles.list}
         contentContainerStyle={styles.listContent}
         scrollEventThrottle={100}
-        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
         onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          scrollYRef.current = contentOffset.y;
+          // 맨아래에서 충분히 올라가 있으면 ⬇ 버튼 표시
+          setShowJumpDown(contentSize.height - layoutMeasurement.height - contentOffset.y > 400);
           // 맨 위 근처로 스크롤하면 이전 대화 페이지 로드.
           // 단, 최초 포커스(맨아래 점프) 전에는 발동 금지 — 진입 직후 y=0에서 오발동해 포커스를 망침.
-          if (didInitialScrollRef.current && e.nativeEvent.contentOffset.y <= 30) loadOlder();
+          if (didInitialScrollRef.current && contentOffset.y <= 30) loadOlder();
         }}
-        onContentSizeChange={() => {
+        onContentSizeChange={(_w, h) => {
+          const prevHeight = contentHeightRef.current;
+          contentHeightRef.current = h;
           const count = chat.messages.length;
           const grew = count > lastMsgCountRef.current;
           lastMsgCountRef.current = count;
           if (suppressAutoScrollRef.current) {
-            // 이전 페이지 prepend로 인한 크기 변화 — 맨아래로 튀지 않게 1회 무시
+            // 이전 페이지 prepend — 보던 위치를 수동 복원해 연속 위스크롤이 끊기지 않게 한다
             suppressAutoScrollRef.current = false;
+            scrollRef.current?.scrollTo({ y: h - prevHeight + scrollYRef.current, animated: false });
             return;
           }
           if (!didInitialScrollRef.current) {
@@ -423,6 +435,15 @@ export default function Chat() {
           </View>
         ) : null}
       </ScrollView>
+      {showJumpDown ? (
+        <Pressable
+          style={styles.jumpDownButton}
+          onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        >
+          <Text style={styles.jumpDownText}>⬇</Text>
+        </Pressable>
+      ) : null}
+      </View>
 
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
@@ -486,8 +507,26 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     color: "#222",
   },
+  listWrap: {
+    flex: 1,
+  },
   list: {
     flex: 1,
+  },
+  jumpDownButton: {
+    position: "absolute",
+    right: 14,
+    bottom: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  jumpDownText: {
+    color: "white",
+    fontSize: 18,
   },
   listContent: {
     padding: 12,

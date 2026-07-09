@@ -177,10 +177,15 @@ pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail
     Page { messages: taken.into_iter().map(|(_, _, m)| m.clone()).collect(), prev, next: total, active }
 }
 
-/// 마지막 메시지가 "사용자 답을 기다리는 질문"인가 — AskUserQuestion 툴 또는 '?'로 끝나는 assistant 텍스트.
-fn is_waiting_msg(m: &TranscriptMsg) -> bool {
-    m.role == "assistant"
-        && (m.tools.iter().any(|t| t == "AskUserQuestion") || m.text.trim_end().ends_with('?'))
+/// 상태 판정(순수): working = 90초 내 갱신(에이전트 활동 중),
+/// waiting = 최근 1시간 내 턴이 끝나 사용자 입력 대기(마지막 메시지가 assistant).
+/// 1시간 지난 세션은 "대화 중"이 아니라 과거 기록으로 보고 표시하지 않는다.
+const WORKING_SECS: u64 = 90;
+const WAITING_SECS: u64 = 3600;
+fn status_from(age_secs: u64, last_role: Option<&str>) -> Option<&'static str> {
+    if age_secs <= WORKING_SECS { return Some("working"); }
+    if age_secs <= WAITING_SECS && last_role == Some("assistant") { return Some("waiting"); }
+    None
 }
 
 /// 파일 끝부분(최대 64KB)만 읽어 마지막 user/assistant 메시지를 파싱 — /projects 상태 판정용 저비용 경로.
@@ -204,7 +209,7 @@ fn last_msg_from_tail(path: &str) -> Option<TranscriptMsg> {
     None
 }
 
-/// 프로젝트 상태: 최신 세션이 활발히 갱신 중이면 "working"(🟢), 아니고 마지막 메시지가 질문 대기면 "waiting"(🔴).
+/// 프로젝트 상태: 최신 세션이 활발히 갱신 중이면 "working"(🟢), 최근 1시간 내 턴 종료·입력 대기면 "waiting"(🔴).
 pub fn project_status(slug: &str) -> Option<String> {
     project_status_in(&format!("{}/{}", projects_root(), slug))
 }
@@ -219,9 +224,10 @@ pub fn project_status_in(dir: &str) -> Option<String> {
         if latest.as_ref().map(|(lm, _)| m > *lm).unwrap_or(true) { latest = Some((m, p)); }
     }
     let (mtime, path) = latest?;
-    if now().saturating_sub(mtime) <= 90 { return Some("working".to_string()); }
+    let age = now().saturating_sub(mtime);
+    if age <= WORKING_SECS { return Some("working".to_string()); }
     let last = last_msg_from_tail(path.to_str()?)?;
-    if is_waiting_msg(&last) { Some("waiting".to_string()) } else { None }
+    status_from(age, Some(last.role.as_str())).map(|s| s.to_string())
 }
 
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
@@ -239,7 +245,8 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
         let preview = msgs.iter().find(|m| m.role == "user").map(|m| {
             let t: String = m.text.chars().take(60).collect(); t
         }).unwrap_or_default();
-        let waiting = !active && msgs.last().map(is_waiting_msg).unwrap_or(false);
+        let age = now().saturating_sub(updated);
+        let waiting = !active && status_from(age, msgs.last().map(|m| m.role.as_str())) == Some("waiting");
         out.push(SessionInfo { session_id: sid, updated, preview, count: msgs.len() as u32, active, waiting });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
@@ -307,6 +314,15 @@ mod tests {
         assert_eq!(older.messages.len(), 2);
         assert_eq!(older.messages[0].text, "옛날1");
         assert_eq!(older.prev, None);
+    }
+    #[test]
+    fn status_working_then_waiting_then_none() {
+        assert_eq!(status_from(0, Some("assistant")), Some("working"));
+        assert_eq!(status_from(90, None), Some("working")); // 활동 중이면 역할 무관
+        assert_eq!(status_from(91, Some("assistant")), Some("waiting")); // 턴 종료 → 입력 대기
+        assert_eq!(status_from(3600, Some("assistant")), Some("waiting"));
+        assert_eq!(status_from(91, Some("user")), None); // 사용자가 마지막(전송 직후 등) → 대기 아님
+        assert_eq!(status_from(3601, Some("assistant")), None); // 1시간 지난 세션은 과거 기록
     }
     #[test]
     fn queued_messages_shown_and_dequeue_replay_deduped() {
