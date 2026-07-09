@@ -27,6 +27,8 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     projects: (): Promise<Project[]> => jget("/projects"),
     preflight: (): Promise<Preflight> => jget("/preflight"),
     diff: (path: string) => jget(`/diff?path=${encodeURIComponent(path)}`),
+    diffFile: (path: string, file: string): Promise<{ file: string; diff: string }> =>
+      jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
     status: (runId: string) => jget(`/status/${runId}`),
     info: (): Promise<{ hostname: string }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),

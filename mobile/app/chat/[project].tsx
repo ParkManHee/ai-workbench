@@ -301,8 +301,29 @@ export default function Chat() {
     try {
       const d: DiffSummary = await makeClient(p.baseUrl, p.token).diff(path);
       setDiff(d);
+      setOpenDiffs({}); // 새 요약 기준으로 펼침 상태 초기화
     } catch {
       // git summary is best-effort; ignore failures.
+    }
+  }
+
+  // 파일 행 탭 → 해당 파일 unified diff 펼침/접힘
+  const [openDiffs, setOpenDiffs] = useState<Record<string, string>>({});
+  async function toggleFileDiff(file: string) {
+    if (openDiffs[file] !== undefined) {
+      setOpenDiffs((prev) => {
+        const next = { ...prev };
+        delete next[file];
+        return next;
+      });
+      return;
+    }
+    if (!pc || !path) return;
+    try {
+      const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file);
+      setOpenDiffs((prev) => ({ ...prev, [file]: res.diff.trim() ? res.diff : "(표시할 diff 없음)" }));
+    } catch {
+      setOpenDiffs((prev) => ({ ...prev, [file]: "(diff 조회 실패)" }));
     }
   }
 
@@ -521,9 +542,18 @@ export default function Chat() {
               git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions}
             </Text>
             {diff.entries.map((e, i) => (
-              <Text key={i} style={styles.diffEntry}>
-                {e.status} {e.path}
-              </Text>
+              <View key={i}>
+                <Pressable onPress={() => toggleFileDiff(e.path)}>
+                  <Text style={styles.diffEntry}>
+                    {openDiffs[e.path] !== undefined ? "▼" : "▶"} {e.status} {e.path}
+                  </Text>
+                </Pressable>
+                {openDiffs[e.path] !== undefined ? (
+                  <Text style={styles.diffText} selectable>
+                    {openDiffs[e.path]}
+                  </Text>
+                ) : null}
+              </View>
             ))}
           </View>
         ) : null}
@@ -761,6 +791,16 @@ const styles = StyleSheet.create({
   diffEntry: {
     fontSize: 12,
     color: "#444",
+    paddingVertical: 2,
+  },
+  diffText: {
+    fontSize: 10,
+    fontFamily: "monospace",
+    color: "#333",
+    backgroundColor: "#f0f0f0",
+    borderRadius: 6,
+    padding: 6,
+    marginVertical: 2,
   },
   inputBar: {
     flexDirection: "row",

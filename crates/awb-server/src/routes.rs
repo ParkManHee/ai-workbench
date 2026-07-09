@@ -48,10 +48,14 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
 }
 
 #[derive(serde::Deserialize)]
-pub struct DiffQuery { pub path: String }
+pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String> }
 
-pub async fn diff_handler(Query(q): Query<DiffQuery>) -> Json<crate::gitdiff::DiffSummary> {
-    Json(crate::gitdiff::summarize(&q.path))
+/// file 없으면 변경 요약, file 있으면 해당 파일의 unified diff(폰에서 파일 행 탭 시).
+pub async fn diff_handler(Query(q): Query<DiffQuery>) -> Json<serde_json::Value> {
+    match q.file {
+        Some(f) => Json(serde_json::json!({ "file": f, "diff": crate::gitdiff::file_diff(&q.path, &f) })),
+        None => Json(serde_json::to_value(crate::gitdiff::summarize(&q.path)).unwrap_or_default()),
+    }
 }
 
 pub fn default_roots() -> Vec<String> {
