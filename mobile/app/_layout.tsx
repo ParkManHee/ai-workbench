@@ -9,11 +9,26 @@ import { makeClient } from "../src/lib/api";
 import type { PC } from "../src/lib/types";
 import { loadPCs } from "../src/store/pcs";
 
+// 앱이 포그라운드일 때도 알림을 표시(기본은 억제됨)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
 async function registerPush(pc: PC): Promise<void> {
   // Push is an optional convenience (completion notifications); any failure
   // here (no FCM credentials in dev, permission denied, network error, ...)
   // must never crash or block the app.
   try {
+    // Android 8+ 필수: 채널이 없으면 알림이 조용히 버려진다
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "실행 알림",
+      importance: Notifications.AndroidImportance.HIGH,
+    });
     const perm = await Notifications.requestPermissionsAsync();
     if (!perm.granted) return;
     const expoToken = await Notifications.getExpoPushTokenAsync();

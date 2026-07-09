@@ -2,7 +2,7 @@
   import { call } from "./api";
   import type { Project } from "./types";
 
-  interface SessionInfo { session_id: string; updated: number; preview: string; count: number; active: boolean; waiting: boolean }
+  interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean }
   interface TxMsg { role: string; text: string; tools: string[]; tool_details: string[] }
   interface Page { messages: TxMsg[]; prev: number | null; next: number; active: boolean }
 
@@ -100,6 +100,7 @@
     {#each sessions as s (s.session_id)}
       <button class="session" class:selected={selected === s.session_id} onclick={() => open(s.session_id)}>
         <span class="preview">{s.active ? "🟢 " : s.waiting ? "🔴 " : ""}{s.preview || "(프롬프트 없음)"}</span>
+        {#if s.answer_preview}<span class="answer">↳ {s.answer_preview}</span>{/if}
         <span class="meta">{fmt(s.updated)} · {s.count}개</span>
       </button>
     {:else}
@@ -172,6 +173,14 @@
   .session.selected { background: #eef4ff; }
   .session .preview {
     display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session .answer {
+    display: block;
+    font-size: 0.8rem;
+    color: #666;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

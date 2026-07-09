@@ -154,6 +154,9 @@ export default function Sessions() {
                 </Text>
                 {item.active ? <Text style={styles.activeBadge}>🟢</Text> : item.waiting ? <Text style={styles.activeBadge}>🔴</Text> : null}
               </View>
+              {item.answer_preview ? (
+                <Text style={styles.answerPreview} numberOfLines={1}>↳ {item.answer_preview}</Text>
+              ) : null}
               <Text style={styles.updated}>{formatUpdated(item.updated)}</Text>
             </Pressable>
           )}
@@ -211,6 +214,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   },
   activeBadge: {
     fontSize: 12,
+  },
+  answerPreview: {
+    fontSize: 13,
+    color: t.subtext,
+    marginTop: 3,
   },
   updated: {
     fontSize: 12,
