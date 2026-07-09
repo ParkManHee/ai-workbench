@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,6 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -57,6 +59,9 @@ export default function Chat() {
   const [plan, setPlan] = useState(false);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행
+  const [images, setImages] = useState<{ uri: string; ext: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
   // 툴(Edit/Bash 등) 상세는 기본 접힘 — "🔧 작업 N" 버튼 탭 시에만 펼침(메시지 index 기준)
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
   function toggleTools(i: number) {
@@ -275,22 +280,64 @@ export default function Chat() {
     }
   }
 
+  async function pickImages() {
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      selectionLimit: 3,
+      quality: 0.8,
+    });
+    if (res.canceled || !res.assets) return;
+    const picked = res.assets.map((a) => {
+      // 서버 화이트리스트(jpg/jpeg/png/webp)에 맞춰 확장자 결정 — 모르면 jpg
+      let ext = (a.mimeType?.split("/")[1] ?? a.fileName?.split(".").pop() ?? "jpg").toLowerCase();
+      if (!["jpg", "jpeg", "png", "webp"].includes(ext)) ext = "jpg";
+      return { uri: a.uri, ext };
+    });
+    setImages((prev) => [...prev, ...picked].slice(0, 3));
+  }
+
   async function handleSend() {
     if (!pc || !client || !project) return;
     const text = prompt.trim();
-    if (!text || chat.running) return;
+    if ((!text && images.length === 0) || chat.running || uploading) return;
+
+    setSendError(null);
+    // 이미지 먼저 업로드 — 실패하면 입력을 유지한 채 전송 중단(부분 업로드로 실행하지 않음)
+    const paths: string[] = [];
+    if (images.length > 0) {
+      setUploading(true);
+      try {
+        for (const im of images) paths.push((await client.upload(im.uri, im.ext)).path);
+      } catch (e) {
+        if (isUnauthorized(e)) {
+          await removePC(pc.id);
+          router.replace("/");
+          return;
+        }
+        setSendError("이미지 업로드 실패. 다시 시도해주세요.");
+        return;
+      } finally {
+        setUploading(false);
+      }
+    }
 
     stopPoll(); // the user's own run now drives the live view
-    setSendError(null);
     setDiff(null);
     setPrompt("");
+    setImages([]);
     reconnectedRef.current = false;
 
-    const userMsg: ChatMsg = { role: "user", text };
+    // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
+    const fullPrompt = paths.length
+      ? `${text}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
+      : text;
+    const shown = paths.length ? `${text}${text ? "\n" : ""}🖼 이미지 ${paths.length}장` : text;
+    const userMsg: ChatMsg = { role: "user", text: shown };
     setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
 
     try {
-      const { run_id } = await client.chat(project, text, plan, session);
+      const { run_id } = await client.chat(project, fullPrompt, plan, session);
       runIdRef.current = run_id;
       connectWs(run_id, pc);
     } catch (e) {
@@ -459,6 +506,22 @@ export default function Chat() {
       {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
 
       <KeyboardStickyView>
+        {images.length > 0 ? (
+          <View style={styles.attachRow}>
+            {images.map((im, i) => (
+              <View key={i} style={styles.thumbWrap}>
+                <Image source={{ uri: im.uri }} style={styles.thumb} />
+                <Pressable
+                  style={styles.thumbRemove}
+                  onPress={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  <Text style={styles.thumbRemoveText}>✕</Text>
+                </Pressable>
+              </View>
+            ))}
+            {uploading ? <ActivityIndicator style={{ marginLeft: 4 }} /> : null}
+          </View>
+        ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
@@ -469,6 +532,9 @@ export default function Chat() {
             style={{ transform: [{ scale: 0.85 }] }}
           />
         </View>
+        <Pressable style={styles.attachButton} onPress={pickImages} disabled={running || uploading || images.length >= 3}>
+          <Text style={styles.attachButtonText}>🖼</Text>
+        </Pressable>
         <TextInput
           style={styles.input}
           multiline
@@ -486,9 +552,9 @@ export default function Chat() {
           <Pressable
             style={styles.sendButton}
             onPress={handleSend}
-            disabled={!prompt.trim()}
+            disabled={(!prompt.trim() && images.length === 0) || uploading}
           >
-            <Text style={styles.buttonText}>전송</Text>
+            <Text style={styles.buttonText}>{uploading ? "업로드…" : "전송"}</Text>
           </Pressable>
         )}
         </View>
@@ -630,6 +696,48 @@ const styles = StyleSheet.create({
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#ccc",
+  },
+  attachRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#ccc",
+    backgroundColor: "#fafafa",
+  },
+  thumbWrap: {
+    position: "relative",
+  },
+  thumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: "#eee",
+  },
+  thumbRemove: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  thumbRemoveText: {
+    color: "white",
+    fontSize: 11,
+  },
+  attachButton: {
+    height: 40,
+    justifyContent: "center",
+    paddingHorizontal: 2,
+  },
+  attachButtonText: {
+    fontSize: 20,
   },
   planRow: {
     flexDirection: "row",

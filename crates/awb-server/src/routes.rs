@@ -23,6 +23,8 @@ pub struct AppState {
     pub settings_path: String,
     pub runs_dir: String,
     pub push: PushStore,
+    /// 폰에서 올린 첨부 이미지 저장 디렉터리(경로는 서버가 결정 — 클라이언트 주입 불가)
+    pub uploads_dir: String,
 }
 
 #[derive(Serialize)]
@@ -171,6 +173,29 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
 }
 
 #[derive(serde::Deserialize)]
+pub struct UploadQuery { pub ext: String }
+
+const UPLOAD_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
+pub const UPLOAD_LIMIT_BYTES: usize = 15 * 1024 * 1024;
+
+/// 폰 첨부 이미지 업로드: raw bytes → uploads_dir에 저장, 절대경로 반환.
+/// 파일명은 서버가 생성(시각-pid-순번.확장자) — 클라이언트가 경로를 주입할 수 없다.
+pub async fn upload_handler(State(st): State<AppState>, Query(q): Query<UploadQuery>, body: axum::body::Bytes) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ext = q.ext.to_ascii_lowercase();
+    if !UPLOAD_EXTS.contains(&ext.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!("허용되지 않는 확장자: {ext} (jpg/jpeg/png/webp)")));
+    }
+    if body.is_empty() { return Err((StatusCode::BAD_REQUEST, "빈 본문".into())); }
+    std::fs::create_dir_all(&st.uploads_dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("업로드 디렉터리 생성 실패: {e}")))?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = format!("{}/{}-{}-{}.{}", st.uploads_dir, secs, std::process::id(), seq, ext);
+    std::fs::write(&path, &body).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("저장 실패: {e}")))?;
+    Ok(Json(serde_json::json!({ "path": path })))
+}
+
+#[derive(serde::Deserialize)]
 pub struct PushRegisterBody { pub token: String }
 
 pub async fn push_register_handler(State(st): State<AppState>, Json(b): Json<PushRegisterBody>) -> StatusCode {
@@ -196,6 +221,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/sessions/{project}", get(sessions_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
+        // 이미지 업로드: 기본 body 한도(2MB)를 사진 크기에 맞게 상향
+        .route("/upload", post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
@@ -227,7 +254,47 @@ mod tests {
             settings_path: "/tmp/ws.json".into(),
             runs_dir: std::env::temp_dir().join("awb_routes_test_runs").to_string_lossy().to_string(),
             push: crate::push::PushStore::load(&std::env::temp_dir().join("awb_routes_test_push.json").to_string_lossy().to_string()),
+            uploads_dir: std::env::temp_dir().join("awb_routes_test_uploads").to_string_lossy().to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn upload_without_auth_is_unauthorized() {
+        let devices_path = tmp("awb_routes_devices_upload_noauth.json"); let _ = std::fs::remove_file(&devices_path);
+        let app = crate::routes::router(test_state("/tmp", &devices_path));
+        let res = app.oneshot(Request::builder().method("POST").uri("/upload?ext=jpg").body(Body::from("xx")).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn upload_saves_bytes_and_returns_path() {
+        let devices_path = tmp("awb_routes_devices_upload_ok.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        let token = "tok-upload-ok";
+        state.devices.add(token, "test-device");
+        let app = crate::routes::router(state);
+        let res = app.oneshot(Request::builder().method("POST").uri("/upload?ext=png")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(vec![1u8, 2, 3, 4])).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let path = v["path"].as_str().unwrap();
+        assert!(path.ends_with(".png"), "{path}");
+        assert_eq!(std::fs::read(path).unwrap(), vec![1u8, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_disallowed_ext() {
+        let devices_path = tmp("awb_routes_devices_upload_ext.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        let token = "tok-upload-ext";
+        state.devices.add(token, "test-device");
+        let app = crate::routes::router(state);
+        let res = app.oneshot(Request::builder().method("POST").uri("/upload?ext=sh")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from("echo pwned")).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

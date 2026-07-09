@@ -50,6 +50,7 @@ async fn serve() {
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
+        uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };
     let app = routes::router(state);
     let listener = match tokio::net::TcpListener::bind(&addr).await {

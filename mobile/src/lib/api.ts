@@ -44,6 +44,17 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       return (r as any).json() as Promise<{ run_id: string; log: string }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
+    /** 첨부 이미지 업로드: 로컬 파일 uri를 blob으로 읽어 raw bytes 전송 → Mac 저장 절대경로를 반환받는다. */
+    upload: async (uri: string, ext: string): Promise<{ path: string }> => {
+      const blob = await (await f(uri)).blob();
+      const r = await f(`${baseUrl}/upload?ext=${encodeURIComponent(ext)}`, {
+        method: "POST",
+        headers: { ...h, "Content-Type": "application/octet-stream" },
+        body: blob,
+      } as any);
+      if (!(r as any).ok) throw new HttpError((r as any).status, "/upload");
+      return (r as any).json();
+    },
     registerPush: (pushToken: string) => f(`${baseUrl}/push/register`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ token: pushToken }) } as any),
   };
 }
