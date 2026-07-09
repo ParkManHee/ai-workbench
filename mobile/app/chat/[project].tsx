@@ -44,6 +44,9 @@ export default function Chat() {
   // 키보드가 열리면 입력바가 키보드 위로 올라가므로, 하단 내비바 안전영역 패딩을
   // 빼서 입력바와 키보드 사이 흰 공백을 없앤다(닫혀 있을 때만 안전영역 적용).
   const kbVisible = useKeyboardState((s) => s.isVisible);
+  // 키보드가 열리면 입력바가 리스트 위로 겹쳐 올라오므로, 가려지는 만큼 하단 패딩을 준다.
+  const kbHeight = useKeyboardState((s) => s.height);
+  const kbPad = kbVisible ? kbHeight : 0;
   // undefined = not checked yet, null = checked and no PC found (redirecting)
   const [pc, setPc] = useState<PC | null | undefined>(undefined);
   // initialChatState() has running:true by design (it's the state reset when a
@@ -105,6 +108,14 @@ export default function Chat() {
       wsRef.current = null;
     };
   }, []);
+
+  // 키보드가 열리면 최신 메시지가 입력바에 가려지지 않게 맨아래로 스크롤.
+  useEffect(() => {
+    if (kbVisible) {
+      const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+      return () => clearTimeout(t);
+    }
+  }, [kbVisible]);
 
   // Stop the active-session poll (unmount, or the user starts their own run).
   function stopPoll() {
@@ -330,7 +341,7 @@ export default function Chat() {
       <ScrollView
         ref={scrollRef}
         style={styles.list}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, kbPad > 0 ? { paddingBottom: kbPad + 12 } : null]}
         scrollEventThrottle={100}
         onScroll={(e) => {
           const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -437,7 +448,7 @@ export default function Chat() {
       </ScrollView>
       {showJumpDown ? (
         <Pressable
-          style={styles.jumpDownButton}
+          style={[styles.jumpDownButton, kbPad > 0 ? { bottom: 14 + kbPad } : null]}
           onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
           <Text style={styles.jumpDownText}>⬇</Text>

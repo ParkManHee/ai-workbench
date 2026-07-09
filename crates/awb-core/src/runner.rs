@@ -23,7 +23,19 @@ fn unique_log_path(runs_dir: &str) -> String {
 }
 fn app_dir() -> String {
     // awb-run.sh 위치: 앱 리소스. 개발 중엔 리포 scripts/. 배포 시 Tauri resource 경로로 교체(TODO).
-    std::env::var("AWB_SCRIPTS_DIR").unwrap_or_else(|_| format!("{}/github/ai-workbench/scripts", std::env::var("HOME").unwrap_or_default()))
+    if let Ok(d) = std::env::var("AWB_SCRIPTS_DIR") { return d; }
+    // 개발 실행(워크트리 포함): 실행파일 조상 디렉터리에서 scripts/ 탐색 — 홈 하드코딩은 최후 폴백.
+    // (워크트리에서 띄운 데몬이 메인 리포 scripts를 집어 스크립트 부재로 실행이 죽던 문제)
+    if let Some(d) = scripts_dir_from_exe() { return d; }
+    format!("{}/github/ai-workbench/scripts", std::env::var("HOME").unwrap_or_default())
+}
+fn scripts_dir_from_exe() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    for a in exe.ancestors() {
+        let s = a.join("scripts");
+        if s.join("awb-run.sh").is_file() { return Some(s.to_string_lossy().into_owned()); }
+    }
+    None
 }
 
 pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, prompt: &str, runs_dir: &str) -> Result<RunHandle, String> {
@@ -47,8 +59,9 @@ pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, pr
             .spawn()
     }.map_err(|e| { crate::lock::release(&workdir_e); format!("spawn 실패: {e}") })?;
     let pgid = child.id() as i32; // setsid 후 자식 pid == pgid
+    reap_in_background(child);
     // 락 메타 pgid 갱신
-    let info = LockInfo { pid: child.id(), pgid, start_ts: now(), source: "app".into() };
+    let info = LockInfo { pid: pgid as u32, pgid, start_ts: now(), source: "app".into() };
     let _ = std::fs::write(crate::lock::lock_dir(&workdir_e).join("meta.json"), serde_json::to_string(&info).unwrap());
     Ok(RunHandle { log, pgid })
 }
@@ -74,9 +87,16 @@ pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: b
             .spawn()
     }.map_err(|e| { crate::lock::release(&workdir_e); format!("spawn 실패: {e}") })?;
     let pgid = child.id() as i32;
-    let info = LockInfo { pid: child.id(), pgid, start_ts: now(), source: "daemon".into() };
+    reap_in_background(child);
+    let info = LockInfo { pid: pgid as u32, pgid, start_ts: now(), source: "daemon".into() };
     let _ = std::fs::write(crate::lock::lock_dir(&workdir_e).join("meta.json"), serde_json::to_string(&info).unwrap());
     Ok(RunHandle { log, pgid })
+}
+
+/// 종료된 자식을 회수(wait) — 안 하면 좀비로 남아 락의 kill(pgid,0) 생존검사가
+/// "살아있음"으로 오판, 실패한 실행의 락이 데몬 종료까지 풀리지 않는다.
+fn reap_in_background(mut child: std::process::Child) {
+    std::thread::spawn(move || { let _ = child.wait(); });
 }
 
 pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
@@ -95,6 +115,13 @@ pub fn cancel_run(pgid: i32, workdir: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scripts_dir_resolves_from_exe_ancestors() {
+        // cargo test 실행파일은 <repo>/target/debug/deps/ 아래 — 조상 탐색으로 이 리포의 scripts/를 찾아야 함
+        let d = scripts_dir_from_exe().expect("리포 안에서는 scripts/를 찾아야 함");
+        assert!(d.ends_with("/scripts"), "{d}");
+        assert!(std::path::Path::new(&d).join("awb-run-stream.sh").is_file(), "스트림 래퍼도 같은 디렉터리에 있어야 함");
+    }
     #[test]
     fn unique_log_path_differs_on_consecutive_calls() {
         let runs = std::env::temp_dir().join("awb_runs_unique");
