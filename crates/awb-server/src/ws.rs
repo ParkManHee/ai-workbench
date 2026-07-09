@@ -61,9 +61,14 @@ async fn stream_loop(
         }
     };
     let mut pending = String::new();
+    // keepalive: 폰 절전/NAT가 유휴 연결을 끊지 않도록 주기적으로 ping 프레임 전송
+    // (OkHttp/브라우저가 pong을 자동 응답하므로 클라이언트 코드는 무관여).
+    const PING_EVERY_SECS: u64 = 20;
+    let mut since_traffic = 0u64;
     loop {
         let chunk = awb_core::runlog::read_log(&meta.log, offset);
         offset = chunk.offset;
+        if !chunk.text.is_empty() { since_traffic = 0; }
         if !chunk.text.is_empty() {
             pending.push_str(&chunk.text);
             let (lines, consumed) = split_new_lines(&pending);
@@ -101,6 +106,13 @@ async fn stream_loop(
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        since_traffic += 1;
+        if since_traffic >= PING_EVERY_SECS {
+            since_traffic = 0;
+            if socket.send(Message::Ping(vec![].into())).await.is_err() {
+                return; // 상대가 죽은 연결 — 정리
+            }
+        }
     }
 }
 
