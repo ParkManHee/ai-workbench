@@ -2,17 +2,28 @@ import { useCallback, useState } from "react";
 import { Alert, Button, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { PC } from "../src/lib/types";
+import { makeClient } from "../src/lib/api";
+import type { PC, Project } from "../src/lib/types";
 import { loadPCs, removePC } from "../src/store/pcs";
 
 function hostOf(baseUrl: string): string {
   return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
 }
 
+/** PC 한 대의 활동 요약 한 줄: "🟢 proj1 · 🔴 proj2" (상태 있는 프로젝트만). */
+function statusLine(projects: Project[]): string {
+  const parts = projects
+    .filter((p) => p.agent_status)
+    .map((p) => `${p.agent_status === "working" ? "🟢" : "🔴"} ${p.name}`);
+  return parts.join(" · ");
+}
+
 export default function Index() {
   const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and empty (redirecting)
   const [pcs, setPcs] = useState<PC[] | null | undefined>(undefined);
+  // PC별 활동 요약(대시보드): pcId → 요약 문자열("" = 활동 없음, undefined = 조회 전/실패)
+  const [statusById, setStatusById] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     const list = await loadPCs();
@@ -22,6 +33,19 @@ export default function Index() {
       return;
     }
     setPcs(list);
+    // 각 PC의 프로젝트 상태를 병렬 best-effort 조회(오프라인 PC는 조용히 스킵)
+    list.forEach(async (pc) => {
+      try {
+        const projects: Project[] = await makeClient(pc.baseUrl, pc.token).projects();
+        setStatusById((prev) => ({ ...prev, [pc.id]: statusLine(projects) }));
+      } catch {
+        setStatusById((prev) => {
+          const next = { ...prev };
+          delete next[pc.id];
+          return next;
+        });
+      }
+    });
   }, []);
 
   // Re-check whenever this screen regains focus (e.g. back from /pair after
@@ -76,6 +100,11 @@ export default function Index() {
           >
             <Text style={styles.label}>{item.label}</Text>
             <Text style={styles.host}>{hostOf(item.baseUrl)}</Text>
+            {statusById[item.id] ? (
+              <Text style={styles.statusLine}>{statusById[item.id]}</Text>
+            ) : statusById[item.id] === "" ? (
+              <Text style={styles.statusIdle}>활동 중인 프로젝트 없음</Text>
+            ) : null}
           </Pressable>
         )}
       />
@@ -111,5 +140,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#666",
     marginTop: 2,
+  },
+  statusLine: {
+    fontSize: 13,
+    marginTop: 6,
+  },
+  statusIdle: {
+    fontSize: 12,
+    color: "#999",
+    marginTop: 6,
   },
 });
