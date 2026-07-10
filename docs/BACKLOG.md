@@ -16,8 +16,8 @@
 - [x] 데몬 launchd 상주화 (RunAtLoad + KeepAlive + 파일 로그) (M)
 - [x] `.awb-runs`/`.awb-uploads` GC — N일/M개 초과 정리 (S)
 - [x] 페어링 기기 관리 — GET /devices + revoke 라우트 + 폰 설정 UI (M)
-- [ ] 데몬 진단 /diag — 버전·uptime·활성 run·최근 에러 + tracing 파일 로깅 (M)
-- [ ] 앱 버전 협상 — /info에 min_app_version, 폰 업데이트 배너 (M)
+- [x] 데몬 진단(/info 확장: version·uptime·활성 run) — 버전·uptime·활성 run·최근 에러 + tracing 파일 로깅 (M)
+- [x] 앱 버전 협상 — /info에 min_app_version, 폰 업데이트 배너 (M)
 
 ## Tier 3 — 저공수·고체감 UX
 
