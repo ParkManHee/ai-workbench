@@ -25,7 +25,7 @@
 - [x] plan 승인 원탭 — 계획 출력 후 "이대로 진행" 칩 (S)
 - [x] 실행 중 diff 미리보기 (S)
 - [x] 음성 입력(STT) (S)
-- [ ] 원격 슬래시커맨드 /model·/compact·/usage (S)
+- [x] 원격 슬래시커맨드 — 모델 전환(--model)·/compact 프리셋 (usage는 -p 미지원 제외)
 - [ ] Git 액션 버튼 — 커밋/푸시/PR 원탭 + PR URL 표시 (S~M)
 - [ ] Todo/계획 진행 카드 — TodoWrite 이벤트 파싱해 "지금 뭐 하는 중/남은 단계" (M)
 
