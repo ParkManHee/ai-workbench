@@ -38,6 +38,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
       jget(`/permission/pending/${encodeURIComponent(project)}`),
     devices: (): Promise<{ id: string; label: string; paired_at: number }[]> => jget("/devices"),
+    devServers: (): Promise<{ port: number; process: string; reachable: boolean }[]> => jget("/devservers"),
     revokeDevice: async (id: string) => {
       const r = await f(`${baseUrl}/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: h } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, "/devices/revoke");

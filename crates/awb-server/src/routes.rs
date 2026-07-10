@@ -225,6 +225,41 @@ pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<
     }
 }
 
+#[derive(Serialize, PartialEq, Debug)]
+pub struct DevServer { pub port: u16, pub process: String, pub reachable: bool }
+
+/// lsof LISTEN 출력 파싱(순수) — 폰에서 열 수 있는 개발 서버 후보.
+/// reachable: 0.0.0.0/'*' 바인딩(=Tailscale로 접근 가능). 127.0.0.1은 --host 필요 안내용으로 포함.
+pub fn parse_dev_servers(lsof_out: &str, exclude_ports: &[u16]) -> Vec<DevServer> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    for line in lsof_out.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 9 { continue; }
+        // NAME 컬럼("*:8081" / "127.0.0.1:8787" / "[::1]:5000")은 "(LISTEN)" 바로 앞
+        let addr_port = if *cols.last().unwrap_or(&"") == "(LISTEN)" { cols[cols.len() - 2] } else { cols[cols.len() - 1] };
+        let Some(idx) = addr_port.rfind(':') else { continue };
+        let (addr, port_s) = addr_port.split_at(idx);
+        let Ok(port) = port_s[1..].parse::<u16>() else { continue };
+        if exclude_ports.contains(&port) || !(1024..=49151).contains(&port) { continue; }
+        let reachable = addr == "*" || addr == "0.0.0.0" || addr == "[::]";
+        // IPv4/IPv6 로컬호스트는 안내용으로만
+        if !reachable && !(addr.starts_with("127.") || addr == "[::1]") { continue; }
+        if !seen.insert(port) { continue; }
+        out.push(DevServer { port, process: cols[0].to_string(), reachable });
+    }
+    out.sort_by_key(|d| d.port);
+    out
+}
+
+/// Mac에서 리슨 중인 개발 서버 목록 — 폰 프리뷰(브라우저 오픈)용.
+pub async fn devservers_handler(State(st): State<AppState>) -> Json<Vec<DevServer>> {
+    let port: u16 = st.base_url.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(8787);
+    let out = std::process::Command::new("lsof").args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    Json(parse_dev_servers(&out, &[port, 5037]))
+}
+
 #[derive(Serialize)]
 pub struct DeviceDto { pub id: String, pub label: String, pub paired_at: u64 }
 
@@ -358,6 +393,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/runs/active/{project}", get(active_run_handler))
         .route("/permission/pending/{project}", get(permission_pending_handler))
         .route("/devices", get(devices_handler))
+        .route("/devservers", get(devservers_handler))
         .route("/devices/{id}/revoke", post(device_revoke_handler))
         .route("/permission/answer", post(permission_answer_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
@@ -407,6 +443,22 @@ mod tests {
             base_url: "http://127.0.0.1:0".to_string(),
             started_at: 0,
         }
+    }
+
+    #[test]
+    fn parse_dev_servers_filters_and_flags_reachability() {
+        let sample = concat!(
+            "COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n",
+            "node      45033   mh   25u  IPv4 0x1234      0t0  TCP *:8081 (LISTEN)\n",
+            "vite      12345   mh   30u  IPv4 0x5678      0t0  TCP 127.0.0.1:5173 (LISTEN)\n",
+            "awb-serve  7735   mh   10u  IPv4 0x9abc      0t0  TCP 100.119.50.46:8787 (LISTEN)\n",
+            "rapportd    600   mh    4u  IPv4 0xdef0      0t0  TCP *:49500 (LISTEN)\n",
+            "adb        1111   mh    8u  IPv4 0x1111      0t0  TCP 127.0.0.1:5037 (LISTEN)\n",
+        );
+        let v = crate::routes::parse_dev_servers(sample, &[8787, 5037]);
+        assert_eq!(v.len(), 2, "{v:?}"); // 8081(reachable) + 5173(localhost 안내) — 8787/5037/49500(범위밖) 제외
+        assert_eq!(v[0], crate::routes::DevServer { port: 5173, process: "vite".into(), reachable: false });
+        assert_eq!(v[1], crate::routes::DevServer { port: 8081, process: "node".into(), reachable: true });
     }
 
     #[tokio::test]

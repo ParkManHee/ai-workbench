@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   Image,
   Pressable,
   ScrollView,
@@ -199,6 +201,32 @@ export default function Chat() {
       await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
     } catch {
       // 실패 시 다음 폴에서 다시 나타난다
+    }
+  }
+
+  // Mac에서 리슨 중인 dev 서버를 폰 브라우저로 열기(Tailscale 경유)
+  async function openDevServerPreview() {
+    if (!pc) return;
+    try {
+      const servers = await makeClient(pc.baseUrl, pc.token).devServers();
+      const host = pc.baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+      const reachable = servers.filter((s) => s.reachable);
+      if (reachable.length === 0) {
+        const local = servers.filter((s) => !s.reachable).map((s) => `${s.process}:${s.port}`).join(", ");
+        Alert.alert("프리뷰", local
+          ? `열 수 있는 서버가 없습니다.\n로컬 전용(${local})은 dev 서버를 --host 0.0.0.0 으로 띄워야 폰에서 접근됩니다.`
+          : "리슨 중인 dev 서버가 없습니다.");
+        return;
+      }
+      Alert.alert("dev 서버 프리뷰", "열 서버를 선택하세요", [
+        ...reachable.slice(0, 3).map((s) => ({
+          text: `${s.process} :${s.port}`,
+          onPress: () => Linking.openURL(`http://${host}:${s.port}`),
+        })),
+        { text: "취소", style: "cancel" as const },
+      ]);
+    } catch {
+      Alert.alert("프리뷰", "dev 서버 조회 실패");
     }
   }
 
@@ -748,6 +776,9 @@ export default function Chat() {
         </View>
         <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
+        </Pressable>
+        <Pressable style={styles.attachButton} onPress={openDevServerPreview}>
+          <Text style={styles.attachButtonText}>🌐</Text>
         </Pressable>
         <TextInput
           style={styles.input}
