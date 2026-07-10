@@ -227,6 +227,11 @@ fn status_from(age_secs: u64, last_role: Option<&str>) -> Option<&'static str> {
 }
 
 /// 파일 끝부분(최대 64KB)만 읽어 마지막 user/assistant 메시지를 파싱 — /projects 상태 판정용 저비용 경로.
+/// 세션의 마지막 표시 메시지(저비용 tail 파싱) — 푸시 본문/질문대기 판정 등 외부 사용용.
+pub fn last_message(path: &str) -> Option<TranscriptMsg> {
+    last_msg_from_tail(path)
+}
+
 fn last_msg_from_tail(path: &str) -> Option<TranscriptMsg> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
@@ -269,7 +274,7 @@ pub fn project_status_in(dir: &str) -> Option<String> {
 }
 
 /// 리스트 미리보기용 한 줄 요약: 개행을 공백으로, 마크다운 기호 제거, 60자 절단.
-fn snippet(text: &str) -> String {
+pub fn snippet(text: &str) -> String {
     let cleaned: String = text.chars()
         .map(|c| if c == '\n' { ' ' } else { c })
         .filter(|c| !matches!(c, '*' | '`' | '#'))
