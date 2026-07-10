@@ -32,6 +32,10 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     status: (runId: string) => jget(`/status/${runId}`),
     activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
       jget(`/runs/active/${encodeURIComponent(project)}`),
+    permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
+      jget(`/permission/pending/${encodeURIComponent(project)}`),
+    permissionAnswer: (id: string, allow: boolean) =>
+      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow }) } as any),
     info: (): Promise<{ hostname: string }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
@@ -40,8 +44,8 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string) => {
-      const body: Record<string, unknown> = { prompt, plan };
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean) => {
+      const body: Record<string, unknown> = { prompt, plan, approval: !!approval };
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
       const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);

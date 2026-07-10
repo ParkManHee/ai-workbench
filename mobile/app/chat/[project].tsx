@@ -95,6 +95,9 @@ export default function Chat() {
   const [chat, setChat] = useState<ChatState>(() => ({ ...initialChatState(), running: false }));
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState(false);
+  // 승인 모드: 툴 권한을 사전 허용 대신 폰으로 물어봄(허용/거부 버튼)
+  const [approval, setApproval] = useState(false);
+  const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
@@ -172,6 +175,30 @@ export default function Chat() {
       }
     } catch {
       // best-effort
+    }
+  }
+
+  // 승인 대기 폴: 화면이 떠 있는 동안 이 프로젝트의 권한 요청을 2.5초 간격으로 확인
+  useEffect(() => {
+    if (!pc) return;
+    const iv = setInterval(async () => {
+      try {
+        const r = await makeClient(pc.baseUrl, pc.token).permissionPending(project);
+        setPerms(r.pending);
+      } catch {
+        // best-effort
+      }
+    }, 2500);
+    return () => clearInterval(iv);
+  }, [pc, project]);
+
+  async function answerPermission(id: string, allow: boolean) {
+    if (!pc) return;
+    setPerms((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
+    } catch {
+      // 실패 시 다음 폴에서 다시 나타난다
     }
   }
 
@@ -447,7 +474,7 @@ export default function Chat() {
     const userMsg: ChatMsg = { role: "user", text: shown };
 
     try {
-      const res = await client.chat(project, fullPrompt, plan, session);
+      const res = await client.chat(project, fullPrompt, plan, session, approval);
       setPrompt("");
       setImages([]);
       if (res.queued) {
@@ -644,6 +671,21 @@ export default function Chat() {
       </View>
 
       <KeyboardStickyView>
+        {/* 승인 모드 실행의 권한 요청 — 허용/거부 */}
+        {perms.map((pm) => (
+          <View key={pm.id} style={styles.permCard}>
+            <Text style={styles.permTitle}>🔐 권한 요청: {pm.tool_name}</Text>
+            <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
+            <View style={styles.permButtons}>
+              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true)}>
+                <Text style={styles.buttonText}>허용</Text>
+              </Pressable>
+              <Pressable style={styles.permDeny} onPress={() => answerPermission(pm.id, false)}>
+                <Text style={styles.buttonText}>거부</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
         {/* 마지막 메시지가 선택지 질문(AskUserQuestion)이면 탭 한 번으로 답하는 버튼 */}
         {(() => {
           const last = chat.messages.at(-1);
@@ -693,6 +735,13 @@ export default function Chat() {
           <Switch
             value={plan}
             onValueChange={setPlan}
+            disabled={running}
+            style={{ transform: [{ scale: 0.85 }] }}
+          />
+          <Text style={styles.planLabel}>승인</Text>
+          <Switch
+            value={approval}
+            onValueChange={setApproval}
             disabled={running}
             style={{ transform: [{ scale: 0.85 }] }}
           />
@@ -788,6 +837,40 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   presetChipText: {
     color: t.chipText,
     fontSize: 12,
+  },
+  permCard: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: t.border,
+    backgroundColor: t.box,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  permTitle: {
+    fontWeight: "700",
+    color: t.text,
+  },
+  permBody: {
+    fontSize: 12,
+    fontFamily: "monospace",
+    color: t.subtext,
+  },
+  permButtons: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  permAllow: {
+    backgroundColor: "#1f9d55",
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  permDeny: {
+    backgroundColor: "#c0392b",
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
   },
   jumpDownButton: {
     position: "absolute",

@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod push;
+mod perm;
 mod queue;
 mod routes;
 mod runreg;
@@ -50,6 +51,9 @@ async fn serve() {
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
         queue: queue::TurnQueue::new(),
+        perms: perm::PermStore::new(),
+        perm_secret: pairing::random_token(),
+        base_url: format!("http://{addr}"),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };

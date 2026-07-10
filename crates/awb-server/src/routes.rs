@@ -27,6 +27,12 @@ pub struct AppState {
     pub uploads_dir: String,
     /// 실행 중 도착한 후속 턴 큐(프로젝트별) — 현재 턴 종료 시 자동 실행
     pub queue: crate::queue::TurnQueue,
+    /// 권한 승인 대기(승인 모드 실행의 permission prompt 릴레이)
+    pub perms: crate::perm::PermStore,
+    /// MCP 릴레이 → /permission/request 호출용 내부 시크릿(데몬 시작 시 생성)
+    pub perm_secret: String,
+    /// 데몬 자신의 base url — 스폰한 MCP 스크립트에 전달
+    pub base_url: String,
 }
 
 /// 로그 경로에서 run_id 파생(파일명 stem) — chat/queue 공용.
@@ -84,7 +90,7 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -100,12 +106,13 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
     let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir) {
+    let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref()) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(),
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval,
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }
@@ -128,6 +135,77 @@ pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<Strin
     // SIGTERM/SIGKILL로 그룹 전체가 죽으면 래퍼가 .done을 못 쓸 수 있으므로, 취소를 관측 가능하게 직접 기록한다(128+SIGTERM=143).
     awb_core::runlog::mark_done_if_absent(&meta.log, 143);
     Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
+}
+
+/// 승인 모드 실행용 MCP 설정 파일 생성(런마다) — claude가 이 설정으로 릴레이 MCP를 띄운다.
+pub fn write_approval_mcp_cfg(st: &AppState, project: &str) -> Option<String> {
+    let script = format!("{}/awb-approval-mcp.cjs", awb_core::runner::scripts_dir());
+    let cfg = serde_json::json!({
+        "mcpServers": { "awb-approval": {
+            "command": "node",
+            "args": [script],
+            "env": {
+                "AWB_DAEMON": st.base_url,
+                "AWB_PERM_SECRET": st.perm_secret,
+                "AWB_PROJECT": project,
+            }
+        }}
+    });
+    let runs_dir = awb_core::paths::expand_tilde(&st.runs_dir);
+    let _ = std::fs::create_dir_all(&runs_dir);
+    let path = format!("{}/approval-{}-{}.mcp.json", runs_dir, std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    match std::fs::write(&path, cfg.to_string()) {
+        Ok(_) => Some(path),
+        Err(e) => { eprintln!("MCP 설정 생성 실패: {e}"); None }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct PermRequestBody { pub project: String, pub tool_name: String, pub input: serde_json::Value }
+
+/// MCP 릴레이가 호출(내부 시크릿 인증). 폰 응답까지 대기(최대 300초) 후 allow/deny 반환.
+pub async fn permission_request_handler(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<PermRequestBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if auth != format!("Bearer {}", st.perm_secret) { return Err(StatusCode::UNAUTHORIZED); }
+    let id = crate::pairing::random_token()[..16].to_string();
+    let summary = {
+        let raw = b.input.to_string();
+        let t: String = raw.chars().take(300).collect();
+        if raw.chars().count() > 300 { format!("{t}…") } else { t }
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.perms.insert(&id, crate::perm::PendingPerm {
+        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary.clone(), tx: Some(tx),
+    });
+    // 앱 밖에서도 승인하러 올 수 있게 푸시(딥링크 포함)
+    let tokens = st.push.list();
+    let data = serde_json::json!({
+        "hostname": resolve_hostname(), "project": b.project, "path": "", "session": st.sessions.get(&b.project),
+    });
+    crate::push::send(&tokens, &format!("🔐 승인 요청 — {}", b.project), &format!("{}: {}", b.tool_name, summary), &data);
+    let allow = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await.ok().and_then(|r| r.ok()).unwrap_or(false);
+    st.perms.remove(&id); // 타임아웃 잔류 정리(정상 응답이면 이미 제거됨)
+    Ok(Json(serde_json::json!({ "allow": allow })))
+}
+
+/// 폰 폴링: 이 프로젝트의 승인 대기 목록.
+pub async fn permission_pending_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
+    let items: Vec<serde_json::Value> = st.perms.pending_for(&project).into_iter()
+        .map(|(id, tool, summary)| serde_json::json!({ "id": id, "tool_name": tool, "summary": summary }))
+        .collect();
+    Json(serde_json::json!({ "pending": items }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct PermAnswerBody { pub id: String, pub allow: bool }
+
+/// 폰의 승인/거부 — 대기 중인 MCP 요청을 깨운다.
+pub async fn permission_answer_handler(State(st): State<AppState>, Json(b): Json<PermAnswerBody>) -> StatusCode {
+    if st.perms.answer(&b.id, b.allow) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
 /// 프로젝트의 활성 run 조회 — 폰이 재진입/타 기기에서 진행 중 실행에 attach(취소·대기표시)할 수 있게.
@@ -244,6 +322,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/chat/{project}", post(chat_handler))
         .route("/status/{run_id}", get(status_handler))
         .route("/runs/active/{project}", get(active_run_handler))
+        .route("/permission/pending/{project}", get(permission_pending_handler))
+        .route("/permission/answer", post(permission_answer_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))
@@ -256,6 +336,7 @@ pub fn router(state: AppState) -> axum::Router {
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
         .route("/pair", get(crate::pairing::pair_handler))
+        .route("/permission/request", post(permission_request_handler)) // 내부 시크릿 자체 검증
         .route("/stream/{run_id}", get(crate::ws::stream_handler))
         .merge(protected)
         .with_state(state)
@@ -285,7 +366,53 @@ mod tests {
             push: crate::push::PushStore::load(&std::env::temp_dir().join("awb_routes_test_push.json").to_string_lossy().to_string()),
             uploads_dir: std::env::temp_dir().join("awb_routes_test_uploads").to_string_lossy().to_string(),
             queue: crate::queue::TurnQueue::new(),
+            perms: crate::perm::PermStore::new(),
+            perm_secret: "test-perm-secret".to_string(),
+            base_url: "http://127.0.0.1:0".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn permission_request_waits_for_answer() {
+        let devices_path = tmp("awb_routes_devices_perm.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        // 요청 태스크: 폰 응답까지 대기
+        let st2 = state.clone();
+        let req = tokio::spawn(async move {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("authorization", "Bearer test-perm-secret".parse().unwrap());
+            crate::routes::permission_request_handler(
+                axum::extract::State(st2),
+                headers,
+                Json(crate::routes::PermRequestBody {
+                    project: "proj".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "ls"}),
+                }),
+            ).await
+        });
+        // pending에 나타날 때까지 대기 후 허용 응답
+        let mut id = None;
+        for _ in 0..50 {
+            let items = state.perms.pending_for("proj");
+            if let Some((pid, tool, summary)) = items.into_iter().next() {
+                assert_eq!(tool, "Bash");
+                assert!(summary.contains("ls"));
+                id = Some(pid);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let id = id.expect("pending에 요청이 나타나야 함");
+        assert!(state.perms.answer(&id, true));
+        let res = req.await.unwrap().unwrap();
+        assert_eq!(res.0["allow"], true);
+        // 잘못된 시크릿은 401
+        let mut bad = axum::http::HeaderMap::new();
+        bad.insert("authorization", "Bearer wrong".parse().unwrap());
+        let e = crate::routes::permission_request_handler(
+            axum::extract::State(state.clone()), bad,
+            Json(crate::routes::PermRequestBody { project: "p".into(), tool_name: "t".into(), input: serde_json::json!({}) }),
+        ).await;
+        assert!(matches!(e, Err(StatusCode::UNAUTHORIZED)));
     }
 
     #[tokio::test]
