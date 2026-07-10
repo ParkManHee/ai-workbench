@@ -23,7 +23,7 @@
 
 - [x] localhost dev 서버 폰 프리뷰 — 열린 포트 감지 → Tailscale URL 웹뷰 (S)
 - [x] plan 승인 원탭 — 계획 출력 후 "이대로 진행" 칩 (S)
-- [ ] 실행 중 diff 미리보기 (S)
+- [x] 실행 중 diff 미리보기 (S)
 - [ ] 음성 입력(STT) (S)
 - [ ] 원격 슬래시커맨드 /model·/compact·/usage (S)
 - [ ] Git 액션 버튼 — 커밋/푸시/PR 원탭 + PR URL 표시 (S~M)
