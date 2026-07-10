@@ -21,7 +21,7 @@
 
 ## Tier 3 — 저공수·고체감 UX
 
-- [ ] localhost dev 서버 폰 프리뷰 — 열린 포트 감지 → Tailscale URL 웹뷰 (S)
+- [x] localhost dev 서버 폰 프리뷰 — 열린 포트 감지 → Tailscale URL 웹뷰 (S)
 - [ ] plan 승인 원탭 — 계획 출력 후 "이대로 진행" 칩 (S)
 - [ ] 실행 중 diff 미리보기 (S)
 - [ ] 음성 입력(STT) (S)
