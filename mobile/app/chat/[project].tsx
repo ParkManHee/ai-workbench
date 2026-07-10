@@ -99,6 +99,9 @@ export default function Chat() {
   const [plan, setPlan] = useState(false);
   // 승인 모드: 툴 권한을 사전 허용 대신 폰으로 물어봄(허용/거부 버튼)
   const [approval, setApproval] = useState(false);
+  // plan 실행 완료 후 "이 계획대로 진행" 원탭 칩
+  const [showPlanApprove, setShowPlanApprove] = useState(false);
+  const planAtSendRef = useRef(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -376,6 +379,7 @@ export default function Chat() {
         fetchDiff(p);
         ws.close();
         reloadTailAndPoll(p);
+        if (planAtSendRef.current) setShowPlanApprove(true); // plan 결과 → 원탭 승인 제안
       } else if (ev.kind === "error") {
         doneRef.current = true;
         ws.close();
@@ -463,8 +467,9 @@ export default function Chat() {
     setImages((prev) => [...prev, ...picked].slice(0, 3));
   }
 
-  async function handleSend(overrideText?: string) {
+  async function handleSend(overrideText?: string, overridePlan?: boolean) {
     if (!pc || !client || !project) return;
+    const planFlag = overridePlan ?? plan;
     const text = (overrideText ?? prompt).trim();
     if ((!text && images.length === 0) || uploading) return; // 실행 중에도 전송 허용(서버가 큐잉)
 
@@ -502,7 +507,9 @@ export default function Chat() {
     const userMsg: ChatMsg = { role: "user", text: shown };
 
     try {
-      const res = await client.chat(project, fullPrompt, plan, session, approval);
+      setShowPlanApprove(false);
+      planAtSendRef.current = planFlag;
+      const res = await client.chat(project, fullPrompt, planFlag, session, approval);
       setPrompt("");
       setImages([]);
       if (res.queued) {
@@ -714,6 +721,17 @@ export default function Chat() {
             </View>
           </View>
         ))}
+        {/* plan 완료 → 원탭 실행 승인 */}
+        {showPlanApprove && !chat.running ? (
+          <View style={styles.optionRow}>
+            <Pressable style={styles.optionChip} onPress={() => handleSend("좋아, 방금 세운 계획대로 진행해줘.", false)}>
+              <Text style={styles.optionChipText}>▶ 이 계획대로 진행</Text>
+            </Pressable>
+            <Pressable style={styles.presetChip} onPress={() => setShowPlanApprove(false)}>
+              <Text style={styles.presetChipText}>닫기</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* 마지막 메시지가 선택지 질문(AskUserQuestion)이면 탭 한 번으로 답하는 버튼 */}
         {(() => {
           const last = chat.messages.at(-1);
