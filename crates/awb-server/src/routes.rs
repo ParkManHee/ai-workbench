@@ -353,7 +353,7 @@ mod tests {
         let log = tmp("awb_routes_test_cancel_missing.log");
         let done_path = format!("{log}.done");
         let _ = std::fs::remove_file(&done_path);
-        mark_done_if_absent(&log, 143);
+        awb_core::runlog::mark_done_if_absent(&log, 143);
         let content = std::fs::read_to_string(&done_path).unwrap();
         assert_eq!(content, "143");
         let _ = std::fs::remove_file(&done_path);
@@ -364,7 +364,7 @@ mod tests {
         let log = tmp("awb_routes_test_cancel_existing.log");
         let done_path = format!("{log}.done");
         std::fs::write(&done_path, "0").unwrap();
-        mark_done_if_absent(&log, 143);
+        awb_core::runlog::mark_done_if_absent(&log, 143);
         let content = std::fs::read_to_string(&done_path).unwrap();
         assert_eq!(content, "0");
         let _ = std::fs::remove_file(&done_path);
