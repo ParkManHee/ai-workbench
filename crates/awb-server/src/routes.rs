@@ -25,6 +25,25 @@ pub struct AppState {
     pub push: PushStore,
     /// 폰에서 올린 첨부 이미지 저장 디렉터리(경로는 서버가 결정 — 클라이언트 주입 불가)
     pub uploads_dir: String,
+    /// 실행 중 도착한 후속 턴 큐(프로젝트별) — 현재 턴 종료 시 자동 실행
+    pub queue: crate::queue::TurnQueue,
+    /// 권한 승인 대기(승인 모드 실행의 permission prompt 릴레이)
+    pub perms: crate::perm::PermStore,
+    /// MCP 릴레이 → /permission/request 호출용 내부 시크릿(데몬 시작 시 생성)
+    pub perm_secret: String,
+    /// 데몬 자신의 base url — 스폰한 MCP 스크립트에 전달
+    pub base_url: String,
+    /// 데몬 시작 시각(epoch초) — /info uptime용
+    pub started_at: u64,
+}
+
+/// 폰↔데몬 프로토콜 버전 — 폰이 자신이 아는 버전과 비교해 업데이트 배너를 띄운다.
+/// (호환이 깨지는 API 변경 시 올린다: 2 = 턴큐잉/권한승인/기기관리 추가)
+pub const API_VERSION: u32 = 2;
+
+/// 로그 경로에서 run_id 파생(파일명 stem) — chat/queue 공용.
+pub fn run_id_of(log: &str) -> String {
+    log.rsplit('/').next().unwrap_or(log).trim_end_matches(".log").to_string()
 }
 
 #[derive(Serialize)]
@@ -77,9 +96,15 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String> }
 #[derive(Serialize)]
-pub struct ChatResult { pub run_id: String, pub log: String }
+pub struct ChatResult {
+    pub run_id: Option<String>,
+    pub log: Option<String>,
+    /// true면 실행 중이라 큐에 적재됨(position = 대기 순번). 현재 턴 종료 시 자동 실행.
+    pub queued: bool,
+    pub position: Option<usize>,
+}
 
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
@@ -87,12 +112,22 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
     let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
-    let h = awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir)
-        .map_err(|e| (StatusCode::CONFLICT, e))?;
-    let run_id = h.log.rsplit('/').next().unwrap_or(&h.log).trim_end_matches(".log").to_string();
+    let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref()) {
+        Ok(h) => h,
+        // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
+        Err(e) if e.contains("이미 실행 중") => {
+            let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(),
+            });
+            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
+        }
+        Err(e) => return Err((StatusCode::CONFLICT, e)),
+    };
+    let run_id = run_id_of(&h.log);
     st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
-    Ok(Json(ChatResult { run_id, log: h.log }))
+    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None }))
 }
 
 pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<Json<awb_core::runlog::RunStatus>, StatusCode> {
@@ -100,22 +135,142 @@ pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<Strin
     Ok(Json(awb_core::runlog::run_status(&meta.log, &meta.workdir)))
 }
 
-/// `<log>.done` 마커가 없을 때만 `code`를 기록한다(이미 존재하면 실제 종료코드를 덮어쓰지 않음).
-/// cancel_handler에서 사용: 프로세스 그룹을 SIGTERM/SIGKILL하면 래퍼 sh가 `.done`을 쓰기 전에
-/// 죽을 수 있어 WS/워처가 완료를 관측하지 못하는데, 그 경우를 여기서 보정한다.
-fn mark_done_if_absent(log: &str, code: i32) {
-    let done_path = format!("{log}.done");
-    if !std::path::Path::new(&done_path).exists() {
-        let _ = std::fs::write(&done_path, code.to_string());
-    }
-}
-
 pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<StatusCode, StatusCode> {
     let meta = st.runs.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
     let dead = awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
     // SIGTERM/SIGKILL로 그룹 전체가 죽으면 래퍼가 .done을 못 쓸 수 있으므로, 취소를 관측 가능하게 직접 기록한다(128+SIGTERM=143).
-    mark_done_if_absent(&meta.log, 143);
+    awb_core::runlog::mark_done_if_absent(&meta.log, 143);
     Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
+}
+
+/// 승인 모드 실행용 MCP 설정 파일 생성(런마다) — claude가 이 설정으로 릴레이 MCP를 띄운다.
+pub fn write_approval_mcp_cfg(st: &AppState, project: &str) -> Option<String> {
+    let script = format!("{}/awb-approval-mcp.cjs", awb_core::runner::scripts_dir());
+    // launchd 등 최소 PATH 환경에서도 node가 해석되도록 로그인셸 PATH에서 절대경로를 찾는다
+    let node = awb_core::shell_env::which_in(&awb_core::shell_env::login_path(), "node").unwrap_or_else(|| "node".to_string());
+    let cfg = serde_json::json!({
+        "mcpServers": { "awb-approval": {
+            "command": node,
+            "args": [script],
+            "env": {
+                "AWB_DAEMON": st.base_url,
+                "AWB_PERM_SECRET": st.perm_secret,
+                "AWB_PROJECT": project,
+            }
+        }}
+    });
+    let runs_dir = awb_core::paths::expand_tilde(&st.runs_dir);
+    let _ = std::fs::create_dir_all(&runs_dir);
+    let path = format!("{}/approval-{}-{}.mcp.json", runs_dir, std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    match std::fs::write(&path, cfg.to_string()) {
+        Ok(_) => Some(path),
+        Err(e) => { eprintln!("MCP 설정 생성 실패: {e}"); None }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct PermRequestBody { pub project: String, pub tool_name: String, pub input: serde_json::Value }
+
+/// MCP 릴레이가 호출(내부 시크릿 인증). 폰 응답까지 대기(최대 300초) 후 allow/deny 반환.
+pub async fn permission_request_handler(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<PermRequestBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if auth != format!("Bearer {}", st.perm_secret) { return Err(StatusCode::UNAUTHORIZED); }
+    let id = crate::pairing::random_token()[..16].to_string();
+    let summary = {
+        let raw = b.input.to_string();
+        let t: String = raw.chars().take(300).collect();
+        if raw.chars().count() > 300 { format!("{t}…") } else { t }
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.perms.insert(&id, crate::perm::PendingPerm {
+        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary.clone(), tx: Some(tx),
+    });
+    // 앱 밖에서도 승인하러 올 수 있게 푸시(딥링크 포함)
+    let tokens = st.push.list();
+    let data = serde_json::json!({
+        "hostname": resolve_hostname(), "project": b.project, "path": "", "session": st.sessions.get(&b.project),
+    });
+    crate::push::send(&tokens, &format!("🔐 승인 요청 — {}", b.project), &format!("{}: {}", b.tool_name, summary), &data);
+    let allow = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await.ok().and_then(|r| r.ok()).unwrap_or(false);
+    st.perms.remove(&id); // 타임아웃 잔류 정리(정상 응답이면 이미 제거됨)
+    Ok(Json(serde_json::json!({ "allow": allow })))
+}
+
+/// 폰 폴링: 이 프로젝트의 승인 대기 목록.
+pub async fn permission_pending_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
+    let items: Vec<serde_json::Value> = st.perms.pending_for(&project).into_iter()
+        .map(|(id, tool, summary)| serde_json::json!({ "id": id, "tool_name": tool, "summary": summary }))
+        .collect();
+    Json(serde_json::json!({ "pending": items }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct PermAnswerBody { pub id: String, pub allow: bool }
+
+/// 폰의 승인/거부 — 대기 중인 MCP 요청을 깨운다.
+pub async fn permission_answer_handler(State(st): State<AppState>, Json(b): Json<PermAnswerBody>) -> StatusCode {
+    if st.perms.answer(&b.id, b.allow) { StatusCode::OK } else { StatusCode::NOT_FOUND }
+}
+
+/// 프로젝트의 활성 run 조회 — 폰이 재진입/타 기기에서 진행 중 실행에 attach(취소·대기표시)할 수 있게.
+/// 활성 run이 없으면 200 + {run_id: null} ("없음"은 정상 상태라 404가 아님).
+pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
+    match st.runs.active_for_project(&project) {
+        Some((run_id, _)) => Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project) })),
+        None => Json(serde_json::json!({ "run_id": null, "queued": st.queue.len(&project) })),
+    }
+}
+
+#[derive(Serialize, PartialEq, Debug)]
+pub struct DevServer { pub port: u16, pub process: String, pub reachable: bool }
+
+/// lsof LISTEN 출력 파싱(순수) — 폰에서 열 수 있는 개발 서버 후보.
+/// reachable: 0.0.0.0/'*' 바인딩(=Tailscale로 접근 가능). 127.0.0.1은 --host 필요 안내용으로 포함.
+pub fn parse_dev_servers(lsof_out: &str, exclude_ports: &[u16]) -> Vec<DevServer> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    for line in lsof_out.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 9 { continue; }
+        // NAME 컬럼("*:8081" / "127.0.0.1:8787" / "[::1]:5000")은 "(LISTEN)" 바로 앞
+        let addr_port = if *cols.last().unwrap_or(&"") == "(LISTEN)" { cols[cols.len() - 2] } else { cols[cols.len() - 1] };
+        let Some(idx) = addr_port.rfind(':') else { continue };
+        let (addr, port_s) = addr_port.split_at(idx);
+        let Ok(port) = port_s[1..].parse::<u16>() else { continue };
+        if exclude_ports.contains(&port) || !(1024..=49151).contains(&port) { continue; }
+        let reachable = addr == "*" || addr == "0.0.0.0" || addr == "[::]";
+        // IPv4/IPv6 로컬호스트는 안내용으로만
+        if !reachable && !(addr.starts_with("127.") || addr == "[::1]") { continue; }
+        if !seen.insert(port) { continue; }
+        out.push(DevServer { port, process: cols[0].to_string(), reachable });
+    }
+    out.sort_by_key(|d| d.port);
+    out
+}
+
+/// Mac에서 리슨 중인 개발 서버 목록 — 폰 프리뷰(브라우저 오픈)용.
+pub async fn devservers_handler(State(st): State<AppState>) -> Json<Vec<DevServer>> {
+    let port: u16 = st.base_url.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(8787);
+    let out = std::process::Command::new("lsof").args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    Json(parse_dev_servers(&out, &[port, 5037]))
+}
+
+#[derive(Serialize)]
+pub struct DeviceDto { pub id: String, pub label: String, pub paired_at: u64 }
+
+/// 페어링된 기기 목록(해시 제외) — 분실 기기 확인·회수용.
+pub async fn devices_handler(State(st): State<AppState>) -> Json<Vec<DeviceDto>> {
+    Json(st.devices.list().into_iter().map(|d| DeviceDto { id: d.id, label: d.label, paired_at: d.paired_at }).collect())
+}
+
+/// 기기 토큰 회수 — 해당 기기는 즉시 401(재페어링 필요).
+pub async fn device_revoke_handler(State(st): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    if st.devices.remove(&id) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
 pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::preflight::Preflight> {
@@ -123,7 +278,13 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
 }
 
 #[derive(Serialize)]
-pub struct InfoDto { pub hostname: String }
+pub struct InfoDto {
+    pub hostname: String,
+    pub version: String,
+    pub api_version: u32,
+    pub uptime_secs: u64,
+    pub active_runs: usize,
+}
 
 /// macOS 친숙한 이름(`scutil --get ComputerName`) → 실패 시 `hostname` 명령 → 최종 폴백 `"Mac"`.
 /// 폰이 여러 PC를 페어링했을 때 목록에 표시할 라벨로 사용한다.
@@ -145,8 +306,15 @@ pub fn resolve_hostname() -> String {
     "Mac".to_string()
 }
 
-pub async fn info_handler() -> Json<InfoDto> {
-    Json(InfoDto { hostname: resolve_hostname() })
+pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    Json(InfoDto {
+        hostname: resolve_hostname(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        api_version: API_VERSION,
+        uptime_secs: now.saturating_sub(st.started_at),
+        active_runs: st.runs.count(),
+    })
 }
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
@@ -222,6 +390,12 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/awake", post(awake_handler))
         .route("/chat/{project}", post(chat_handler))
         .route("/status/{run_id}", get(status_handler))
+        .route("/runs/active/{project}", get(active_run_handler))
+        .route("/permission/pending/{project}", get(permission_pending_handler))
+        .route("/devices", get(devices_handler))
+        .route("/devservers", get(devservers_handler))
+        .route("/devices/{id}/revoke", post(device_revoke_handler))
+        .route("/permission/answer", post(permission_answer_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))
@@ -234,6 +408,7 @@ pub fn router(state: AppState) -> axum::Router {
     // 무인증(자체 토큰검증): /pair, /stream/:run_id(?token=<t> 쿼리로 WS 업그레이드 전 검증)
     axum::Router::new()
         .route("/pair", get(crate::pairing::pair_handler))
+        .route("/permission/request", post(permission_request_handler)) // 내부 시크릿 자체 검증
         .route("/stream/{run_id}", get(crate::ws::stream_handler))
         .merge(protected)
         .with_state(state)
@@ -262,7 +437,71 @@ mod tests {
             runs_dir: std::env::temp_dir().join("awb_routes_test_runs").to_string_lossy().to_string(),
             push: crate::push::PushStore::load(&std::env::temp_dir().join("awb_routes_test_push.json").to_string_lossy().to_string()),
             uploads_dir: std::env::temp_dir().join("awb_routes_test_uploads").to_string_lossy().to_string(),
+            queue: crate::queue::TurnQueue::new(),
+            perms: crate::perm::PermStore::new(),
+            perm_secret: "test-perm-secret".to_string(),
+            base_url: "http://127.0.0.1:0".to_string(),
+            started_at: 0,
         }
+    }
+
+    #[test]
+    fn parse_dev_servers_filters_and_flags_reachability() {
+        let sample = concat!(
+            "COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n",
+            "node      45033   mh   25u  IPv4 0x1234      0t0  TCP *:8081 (LISTEN)\n",
+            "vite      12345   mh   30u  IPv4 0x5678      0t0  TCP 127.0.0.1:5173 (LISTEN)\n",
+            "awb-serve  7735   mh   10u  IPv4 0x9abc      0t0  TCP 100.119.50.46:8787 (LISTEN)\n",
+            "rapportd    600   mh    4u  IPv4 0xdef0      0t0  TCP *:49500 (LISTEN)\n",
+            "adb        1111   mh    8u  IPv4 0x1111      0t0  TCP 127.0.0.1:5037 (LISTEN)\n",
+        );
+        let v = crate::routes::parse_dev_servers(sample, &[8787, 5037]);
+        assert_eq!(v.len(), 2, "{v:?}"); // 8081(reachable) + 5173(localhost 안내) — 8787/5037/49500(범위밖) 제외
+        assert_eq!(v[0], crate::routes::DevServer { port: 5173, process: "vite".into(), reachable: false });
+        assert_eq!(v[1], crate::routes::DevServer { port: 8081, process: "node".into(), reachable: true });
+    }
+
+    #[tokio::test]
+    async fn permission_request_waits_for_answer() {
+        let devices_path = tmp("awb_routes_devices_perm.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        // 요청 태스크: 폰 응답까지 대기
+        let st2 = state.clone();
+        let req = tokio::spawn(async move {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("authorization", "Bearer test-perm-secret".parse().unwrap());
+            crate::routes::permission_request_handler(
+                axum::extract::State(st2),
+                headers,
+                Json(crate::routes::PermRequestBody {
+                    project: "proj".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "ls"}),
+                }),
+            ).await
+        });
+        // pending에 나타날 때까지 대기 후 허용 응답
+        let mut id = None;
+        for _ in 0..50 {
+            let items = state.perms.pending_for("proj");
+            if let Some((pid, tool, summary)) = items.into_iter().next() {
+                assert_eq!(tool, "Bash");
+                assert!(summary.contains("ls"));
+                id = Some(pid);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let id = id.expect("pending에 요청이 나타나야 함");
+        assert!(state.perms.answer(&id, true));
+        let res = req.await.unwrap().unwrap();
+        assert_eq!(res.0["allow"], true);
+        // 잘못된 시크릿은 401
+        let mut bad = axum::http::HeaderMap::new();
+        bad.insert("authorization", "Bearer wrong".parse().unwrap());
+        let e = crate::routes::permission_request_handler(
+            axum::extract::State(state.clone()), bad,
+            Json(crate::routes::PermRequestBody { project: "p".into(), tool_name: "t".into(), input: serde_json::json!({}) }),
+        ).await;
+        assert!(matches!(e, Err(StatusCode::UNAUTHORIZED)));
     }
 
     #[tokio::test]
@@ -363,7 +602,7 @@ mod tests {
         let log = tmp("awb_routes_test_cancel_missing.log");
         let done_path = format!("{log}.done");
         let _ = std::fs::remove_file(&done_path);
-        mark_done_if_absent(&log, 143);
+        awb_core::runlog::mark_done_if_absent(&log, 143);
         let content = std::fs::read_to_string(&done_path).unwrap();
         assert_eq!(content, "143");
         let _ = std::fs::remove_file(&done_path);
@@ -374,7 +613,7 @@ mod tests {
         let log = tmp("awb_routes_test_cancel_existing.log");
         let done_path = format!("{log}.done");
         std::fs::write(&done_path, "0").unwrap();
-        mark_done_if_absent(&log, 143);
+        awb_core::runlog::mark_done_if_absent(&log, 143);
         let content = std::fs::read_to_string(&done_path).unwrap();
         assert_eq!(content, "0");
         let _ = std::fs::remove_file(&done_path);

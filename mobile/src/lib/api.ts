@@ -14,6 +14,9 @@ export function isUnauthorized(e: unknown): boolean {
   return e instanceof HttpError && e.status === 401;
 }
 
+/** 이 앱이 아는 데몬 프로토콜 버전 — /info.api_version과 다르면 업데이트 배너. */
+export const EXPECTED_API_VERSION = 2;
+
 export function pairUrl(baseUrl: string, code: string) { return `${baseUrl}/pair?code=${encodeURIComponent(code)}`; }
 export function streamUrl(baseUrl: string, runId: string, offset: number, token: string) {
   const ws = baseUrl.replace(/^http/, "ws");
@@ -30,7 +33,19 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     diffFile: (path: string, file: string): Promise<{ file: string; diff: string }> =>
       jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
     status: (runId: string) => jget(`/status/${runId}`),
-    info: (): Promise<{ hostname: string }> => jget("/info"),
+    activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
+      jget(`/runs/active/${encodeURIComponent(project)}`),
+    permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
+      jget(`/permission/pending/${encodeURIComponent(project)}`),
+    devices: (): Promise<{ id: string; label: string; paired_at: number }[]> => jget("/devices"),
+    devServers: (): Promise<{ port: number; process: string; reachable: boolean }[]> => jget("/devservers"),
+    revokeDevice: async (id: string) => {
+      const r = await f(`${baseUrl}/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: h } as any);
+      if (!(r as any).ok) throw new HttpError((r as any).status, "/devices/revoke");
+    },
+    permissionAnswer: (id: string, allow: boolean) =>
+      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow }) } as any),
+    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
@@ -38,12 +53,13 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string) => {
-      const body: Record<string, unknown> = { prompt, plan };
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean, model?: string) => {
+      const body: Record<string, unknown> = { prompt, plan, approval: !!approval };
+      if (model) body.model = model;
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
       const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);
-      return (r as any).json() as Promise<{ run_id: string; log: string }>;
+      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
     /** 첨부 이미지 업로드(base64 → raw bytes) → Mac 저장 절대경로를 반환받는다.

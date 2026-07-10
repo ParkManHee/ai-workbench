@@ -4,6 +4,10 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod push;
+mod gc;
+mod launchd;
+mod perm;
+mod queue;
 mod routes;
 mod runreg;
 mod sessions;
@@ -15,7 +19,9 @@ async fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
     match arg.as_str() {
         "serve" => serve().await,
-        other => { eprintln!("알 수 없는 명령: {other} (지원: serve)"); std::process::exit(2); }
+        "install" => launchd::install(),
+        "uninstall" => launchd::uninstall(),
+        other => { eprintln!("알 수 없는 명령: {other} (지원: serve|install|uninstall)"); std::process::exit(2); }
     }
 }
 
@@ -48,10 +54,16 @@ async fn serve() {
         claude_bin,
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
+        queue: queue::TurnQueue::new(),
+        perms: perm::PermStore::new(),
+        perm_secret: pairing::random_token(),
+        base_url: format!("http://{addr}"),
+        started_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };
-    let app = routes::router(state);
+    gc::spawn_gc(cfg.runs_dir.clone(), state.uploads_dir.clone());
+    let app = routes::router(state.clone());
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {

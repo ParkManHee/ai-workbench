@@ -42,6 +42,19 @@ pub fn should_push(reg: &crate::runreg::RunRegistry, run_id: &str) -> bool {
     reg.mark_notified(run_id)
 }
 
+/// 푸시 제목/본문(순수): 마지막 메시지가 질문(선택지 있음 또는 '?'로 끝남)이면 "질문 대기"로,
+/// 아니면 완료/실패 verdict로 — 사용자가 알림만 보고 "답하러 가야 하는지"를 구분할 수 있게.
+pub fn push_content(project: &str, verdict: &str, last: Option<&awb_core::transcript::TranscriptMsg>) -> (String, String) {
+    if let Some(m) = last {
+        let is_question = m.role == "assistant" && (!m.options.is_empty() || m.text.trim_end().ends_with('?'));
+        if is_question {
+            return (format!("🔴 질문 대기 — {project}"), awb_core::transcript::snippet(&m.text));
+        }
+    }
+    let emoji = if verdict.starts_with("success") { "✅" } else { "❌" };
+    (format!("{emoji} {project}"), verdict.to_string())
+}
+
 /// 발송 페이로드(순수) — data는 앱이 알림 탭 시 해당 대화방으로 딥링크하는 데 쓴다.
 pub fn build_messages(tokens: &[String], title: &str, body: &str, data: &serde_json::Value) -> Vec<serde_json::Value> {
     tokens
@@ -80,14 +93,27 @@ pub fn send(tokens: &[String], title: &str, body: &str, data: &serde_json::Value
 
 /// run 완료를 폴링하다 완료되면 run_status로 락을 해제하고, notified 게이트를 통과할 때만 푸시를 보낸다.
 /// 순서: done 감지 → run_status(락 해제, WS 미접속으로 인한 락 잔류 방지) → should_push 게이트 → (필요시) send.
+/// hung run 상한(초). claude가 멈춰도 락이 무기한 잡히지 않게 워처가 강제 종료한다.
+fn run_timeout_secs() -> u64 {
+    std::env::var("AWB_RUN_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600)
+}
+
 pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
     tokio::spawn(async move {
         let meta = match st.runs.get(&run_id) {
             Some(m) => m,
             None => return,
         };
+        let timeout = run_timeout_secs();
+        let started = std::time::Instant::now();
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
+            if !chunk.done && started.elapsed().as_secs() >= timeout {
+                // hung run: 그룹 종료 + 타임아웃 코드 기록 → 다음 틱에 done 경로(락 해제·푸시)로 수렴
+                eprintln!("run {run_id} 타임아웃({timeout}s) — 프로세스 그룹 강제 종료");
+                awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
+                awb_core::runlog::mark_done_if_absent(&meta.log, 124);
+            }
             if chunk.done {
                 let status = awb_core::runlog::run_status(&meta.log, &meta.workdir);
                 // WS가 붙어있지 않은 push-only 완료 경로에서도 --resume용 session_id를 캡처한다.
@@ -97,11 +123,12 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                 }
                 if should_push(&st.runs, &run_id) {
                     let tokens = st.push.list();
-                    let title = format!(
-                        "{} {}",
-                        if status.verdict.starts_with("success") { "✅" } else { "❌" },
-                        meta.project
-                    );
+                    // 마지막 메시지가 질문이면 "질문 대기" 푸시로 구분(답하러 들어갈 신호)
+                    let last = st.sessions.get(&meta.project).and_then(|sid| {
+                        let slug = awb_core::transcript::project_slug(&meta.workdir);
+                        awb_core::transcript::last_message(&awb_core::transcript::transcript_path(&slug, &sid))
+                    });
+                    let (title, body) = push_content(&meta.project, &status.verdict, last.as_ref());
                     // 딥링크 데이터: 앱이 hostname으로 PC를 찾고 해당 프로젝트 대화방을 연다
                     let data = serde_json::json!({
                         "hostname": crate::routes::resolve_hostname(),
@@ -109,9 +136,11 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                         "path": meta.workdir,
                         "session": st.sessions.get(&meta.project),
                     });
-                    send(&tokens, &title, &status.verdict, &data);
+                    send(&tokens, &title, &body, &data);
                 }
                 st.runs.remove(&run_id); // 완료된 run은 레지스트리에서 제거(취소/완료 후 무한 누적 방지)
+                // 대기 중인 후속 턴이 있으면 이어서 실행(락이 방금 해제됨)
+                crate::queue::spawn_drain(st.clone(), meta.project.clone(), meta.workdir.clone());
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -141,6 +170,25 @@ mod tests {
             RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
+    }
+
+    #[test]
+    fn push_content_distinguishes_question_from_done() {
+        use awb_core::transcript::TranscriptMsg;
+        let q = TranscriptMsg { role: "assistant".into(), text: "어느 방식으로 진행할까요?".into(), tools: vec![], tool_details: vec![], options: vec![], todos: vec![] };
+        let (t, b) = push_content("proj", "success", Some(&q));
+        assert!(t.contains("질문 대기"), "{t}");
+        assert!(b.contains("어느 방식"));
+        // 선택지가 있으면 '?'로 안 끝나도 질문
+        let opt = TranscriptMsg { role: "assistant".into(), text: "방식을 골라주세요".into(), tools: vec![], tool_details: vec![], options: vec!["A".into()], todos: vec![] };
+        assert!(push_content("proj", "success", Some(&opt)).0.contains("질문 대기"));
+        // 평서문 완료는 verdict 푸시
+        let done = TranscriptMsg { role: "assistant".into(), text: "완료했습니다.".into(), tools: vec![], tool_details: vec![], options: vec![], todos: vec![] };
+        let (t2, b2) = push_content("proj", "success(변경 3)", Some(&done));
+        assert!(t2.starts_with("✅"), "{t2}");
+        assert_eq!(b2, "success(변경 3)");
+        // 마지막 메시지 없으면 verdict 폴백
+        assert!(push_content("proj", "failed", None).0.starts_with("❌"));
     }
 
     #[test]

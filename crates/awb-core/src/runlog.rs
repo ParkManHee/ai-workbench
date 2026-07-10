@@ -44,6 +44,15 @@ pub struct RunStatus {
     pub verdict: String,
 }
 
+/// `<log>.done`이 없을 때만 `code`를 기록한다(이미 존재하면 실제 종료코드를 덮어쓰지 않음).
+/// 그룹 SIGTERM/SIGKILL로 래퍼 sh가 `.done`을 못 쓴 경우의 보정용(취소=143, 타임아웃=124).
+pub fn mark_done_if_absent(log: &str, code: i32) {
+    let done_path = format!("{log}.done");
+    if !std::path::Path::new(&done_path).exists() {
+        let _ = fs::write(&done_path, code.to_string());
+    }
+}
+
 fn changed_files(workdir: &str) -> u32 {
     let out = PCmd::new("git").args(["-C", workdir, "status", "--porcelain"]).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count() as u32).unwrap_or(0)
@@ -72,6 +81,18 @@ pub fn run_status(log: &str, workdir: &str) -> RunStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mark_done_if_absent_does_not_overwrite() {
+        let dir = std::env::temp_dir().join("awb_markdone"); std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("r.log"); let log = log.to_str().unwrap();
+        let done = format!("{log}.done");
+        let _ = std::fs::remove_file(&done);
+        mark_done_if_absent(log, 124);
+        assert_eq!(std::fs::read_to_string(&done).unwrap(), "124");
+        mark_done_if_absent(log, 143); // 이미 있으면 덮어쓰지 않음
+        assert_eq!(std::fs::read_to_string(&done).unwrap(), "124");
+        let _ = std::fs::remove_file(&done);
+    }
 
     #[test]
     fn incremental_and_done() {

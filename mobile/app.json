@@ -51,7 +51,8 @@
         {
           "photosPermission": "AI Workbench에서 첨부할 이미지를 선택하기 위해 사진 접근이 필요합니다."
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "extra": {
       "router": {},

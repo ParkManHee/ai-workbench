@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   Image,
   Pressable,
   ScrollView,
@@ -11,6 +13,7 @@ import {
   View,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,11 +32,12 @@ const PROMPT_PRESETS = [
   "코드리뷰 해줘",
   "커밋해줘",
   "작업로그 갱신해줘",
+  "/compact",
 ];
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
-  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options };
+  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options, todos: m.todos };
 }
 
 interface DiffEntry {
@@ -95,6 +99,18 @@ export default function Chat() {
   const [chat, setChat] = useState<ChatState>(() => ({ ...initialChatState(), running: false }));
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState(false);
+  // 승인 모드: 툴 권한을 사전 허용 대신 폰으로 물어봄(허용/거부 버튼)
+  const [approval, setApproval] = useState(false);
+  // plan 실행 완료 후 "이 계획대로 진행" 원탭 칩
+  const [showPlanApprove, setShowPlanApprove] = useState(false);
+  const planAtSendRef = useRef(false);
+  // 음성 입력(STT): 받아쓰기 시작 시점의 기존 입력을 보존하고 인식 결과를 이어붙인다
+  const [listening, setListening] = useState(false);
+  const dictationBaseRef = useRef("");
+  // 모델 오버라이드("" = 기본): 긴 작업 전 상위/하위 모델 전환
+  const [model, setModel] = useState("");
+  const [todoOpen, setTodoOpen] = useState(false);
+  const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
@@ -162,6 +178,111 @@ export default function Chat() {
     }
   }, [kbVisible]);
 
+  // 진행 중 실행(다른 기기/이전 세션에서 시작)에 attach — 취소 버튼이 동작하게 한다.
+  async function attachActiveRun(p: PC) {
+    try {
+      const r = await makeClient(p.baseUrl, p.token).activeRun(project);
+      if (r.run_id && doneRef.current) {
+        runIdRef.current = r.run_id;
+        setChat((prev) => ({ ...prev, running: true }));
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  // 실행 중 diff 미리보기 — 완료를 기다리지 않고 10초 간격으로 변경 요약 갱신
+  useEffect(() => {
+    if (!chat.running || !pc) return;
+    fetchDiff(pc);
+    const iv = setInterval(() => fetchDiff(pc), 10000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.running, pc]);
+
+  // 승인 대기 폴: 화면이 떠 있는 동안 이 프로젝트의 권한 요청을 2.5초 간격으로 확인
+  useEffect(() => {
+    if (!pc) return;
+    const iv = setInterval(async () => {
+      try {
+        const r = await makeClient(pc.baseUrl, pc.token).permissionPending(project);
+        setPerms(r.pending);
+      } catch {
+        // best-effort
+      }
+    }, 2500);
+    return () => clearInterval(iv);
+  }, [pc, project]);
+
+  async function answerPermission(id: string, allow: boolean) {
+    if (!pc) return;
+    setPerms((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
+    } catch {
+      // 실패 시 다음 폴에서 다시 나타난다
+    }
+  }
+
+  useSpeechRecognitionEvent("result", (e) => {
+    const t = e.results?.[0]?.transcript ?? "";
+    setPrompt(`${dictationBaseRef.current}${dictationBaseRef.current && t ? " " : ""}${t}`);
+  });
+  useSpeechRecognitionEvent("end", () => setListening(false));
+  useSpeechRecognitionEvent("error", () => setListening(false));
+
+  function pickModel() {
+    Alert.alert("모델", `현재: ${model || "기본"}`, [
+      { text: "기본(설정 따름)", onPress: () => setModel("") },
+      { text: "Opus", onPress: () => setModel("opus") },
+      { text: "Sonnet", onPress: () => setModel("sonnet") },
+      { text: "Haiku", onPress: () => setModel("haiku") },
+      { text: "취소", style: "cancel" },
+    ]);
+  }
+
+  async function toggleMic() {
+    if (listening) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+    try {
+      const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!perm.granted) return;
+      dictationBaseRef.current = prompt.trim();
+      setListening(true);
+      ExpoSpeechRecognitionModule.start({ lang: "ko-KR", interimResults: true });
+    } catch {
+      setListening(false);
+    }
+  }
+
+  // Mac에서 리슨 중인 dev 서버를 폰 브라우저로 열기(Tailscale 경유)
+  async function openDevServerPreview() {
+    if (!pc) return;
+    try {
+      const servers = await makeClient(pc.baseUrl, pc.token).devServers();
+      const host = pc.baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+      const reachable = servers.filter((s) => s.reachable);
+      if (reachable.length === 0) {
+        const local = servers.filter((s) => !s.reachable).map((s) => `${s.process}:${s.port}`).join(", ");
+        Alert.alert("프리뷰", local
+          ? `열 수 있는 서버가 없습니다.\n로컬 전용(${local})은 dev 서버를 --host 0.0.0.0 으로 띄워야 폰에서 접근됩니다.`
+          : "리슨 중인 dev 서버가 없습니다.");
+        return;
+      }
+      Alert.alert("dev 서버 프리뷰", "열 서버를 선택하세요", [
+        ...reachable.slice(0, 3).map((s) => ({
+          text: `${s.process} :${s.port}`,
+          onPress: () => Linking.openURL(`http://${host}:${s.port}`),
+        })),
+        { text: "취소", style: "cancel" as const },
+      ]);
+    } catch {
+      Alert.alert("프리뷰", "dev 서버 조회 실패");
+    }
+  }
+
   // Stop the active-session poll (unmount, or the user starts their own run).
   function stopPoll() {
     if (pollRef.current) {
@@ -185,7 +306,14 @@ export default function Chat() {
         if (res.messages.length > 0) {
           setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
         }
-        if (!res.active) stopPoll();
+        if (!res.active) {
+          stopPoll();
+          // attach 상태 해제(원격 실행 종료)
+          if (doneRef.current) {
+            runIdRef.current = null;
+            setChat((prev) => (prev.running ? { ...prev, running: false } : prev));
+          }
+        }
       } catch (e) {
         if (isUnauthorized(e)) {
           stopPoll();
@@ -243,7 +371,10 @@ export default function Chat() {
         nextLineRef.current = res.next;
         prevRef.current = res.prev;
         setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
-        if (res.active) startPoll(pc);
+        if (res.active) {
+          startPoll(pc);
+          attachActiveRun(pc); // 진행 중 실행이 있으면 취소 가능하게 attach
+        }
       })
       .catch(async (e) => {
         if (cancelled) return;
@@ -298,6 +429,7 @@ export default function Chat() {
         fetchDiff(p);
         ws.close();
         reloadTailAndPoll(p);
+        if (planAtSendRef.current) setShowPlanApprove(true); // plan 결과 → 원탭 승인 제안
       } else if (ev.kind === "error") {
         doneRef.current = true;
         ws.close();
@@ -385,10 +517,11 @@ export default function Chat() {
     setImages((prev) => [...prev, ...picked].slice(0, 3));
   }
 
-  async function handleSend(overrideText?: string) {
+  async function handleSend(overrideText?: string, overridePlan?: boolean) {
     if (!pc || !client || !project) return;
+    const planFlag = overridePlan ?? plan;
     const text = (overrideText ?? prompt).trim();
-    if ((!text && images.length === 0) || chat.running || uploading) return;
+    if ((!text && images.length === 0) || uploading) return; // 실행 중에도 전송 허용(서버가 큐잉)
 
     setSendError(null);
     // 이전 버전 코드로 선택된 이미지(base64 없음)가 핫리로드로 상태에 남아있을 수 있다
@@ -416,24 +549,37 @@ export default function Chat() {
       }
     }
 
-    stopPoll(); // the user's own run now drives the live view
-    setDiff(null);
-    setPrompt("");
-    setImages([]);
-    reconnectsRef.current = 0;
-
     // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
     const fullPrompt = paths.length
       ? `${text}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
       : text;
     const shown = paths.length ? `${text}${text ? "\n" : ""}🖼 이미지 ${paths.length}장` : text;
     const userMsg: ChatMsg = { role: "user", text: shown };
-    setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
 
     try {
-      const { run_id } = await client.chat(project, fullPrompt, plan, session);
-      runIdRef.current = run_id;
-      connectWs(run_id, pc);
+      setShowPlanApprove(false);
+      planAtSendRef.current = planFlag;
+      const res = await client.chat(project, fullPrompt, planFlag, session, approval, model || undefined);
+      setPrompt("");
+      setImages([]);
+      if (res.queued) {
+        // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
+        setChat((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            userMsg,
+            { role: "assistant", text: `⏳ 실행 중이라 대기열에 등록했습니다 (순번 ${res.position ?? 1}). 현재 턴이 끝나면 자동으로 전달됩니다.` },
+          ],
+        }));
+        return;
+      }
+      stopPoll(); // the user's own run now drives the live view
+      setDiff(null);
+      reconnectsRef.current = 0;
+      setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
+      runIdRef.current = res.run_id!;
+      connectWs(res.run_id!, pc);
     } catch (e) {
       if (isUnauthorized(e)) {
         // Token revoked/invalid → drop this PC and send the user back to the PC list.
@@ -442,7 +588,6 @@ export default function Chat() {
         return;
       }
       setSendError("전송 실패. 다시 시도해주세요.");
-      setChat((prev) => ({ ...prev, running: false }));
     }
   }
 
@@ -478,6 +623,23 @@ export default function Chat() {
           </Text>
         </View>
       ) : null}
+      {(() => {
+        const withTodos = [...chat.messages].reverse().find((m) => m.todos && m.todos.length > 0);
+        const todos = withTodos?.todos ?? [];
+        if (todos.length === 0) return null;
+        const doneN = todos.filter((x) => x.startsWith("✔")).length;
+        const cur = todos.find((x) => x.startsWith("▶"));
+        return (
+          <Pressable style={styles.todoBar} onPress={() => setTodoOpen((v) => !v)}>
+            <Text style={styles.todoTitle}>
+              ☑ 진행 {doneN}/{todos.length}{cur ? ` · ${cur.slice(2)}` : ""} {todoOpen ? "▲" : "▼"}
+            </Text>
+            {todoOpen ? todos.map((x, i) => (
+              <Text key={i} style={styles.todoItem}>{x}</Text>
+            )) : null}
+          </Pressable>
+        );
+      })()}
       <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
@@ -611,6 +773,40 @@ export default function Chat() {
       </View>
 
       <KeyboardStickyView>
+        {/* 승인 모드 실행의 권한 요청 — 허용/거부 */}
+        {perms.map((pm) => (
+          <View key={pm.id} style={styles.permCard}>
+            <Text style={styles.permTitle}>🔐 권한 요청: {pm.tool_name}</Text>
+            <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
+            <View style={styles.permButtons}>
+              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true)}>
+                <Text style={styles.buttonText}>허용</Text>
+              </Pressable>
+              <Pressable style={styles.permDeny} onPress={() => answerPermission(pm.id, false)}>
+                <Text style={styles.buttonText}>거부</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+        {/* 실행 종료 + 변경 있음 → 커밋 원탭 */}
+        {!chat.running && diff && diff.files > 0 ? (
+          <View style={styles.optionRow}>
+            <Pressable style={styles.optionChip} onPress={() => handleSend("변경사항을 확인해서 적절한 메시지로 커밋하고 푸시해줘.")}>
+              <Text style={styles.optionChipText}>📦 커밋+푸시</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {/* plan 완료 → 원탭 실행 승인 */}
+        {showPlanApprove && !chat.running ? (
+          <View style={styles.optionRow}>
+            <Pressable style={styles.optionChip} onPress={() => handleSend("좋아, 방금 세운 계획대로 진행해줘.", false)}>
+              <Text style={styles.optionChipText}>▶ 이 계획대로 진행</Text>
+            </Pressable>
+            <Pressable style={styles.presetChip} onPress={() => setShowPlanApprove(false)}>
+              <Text style={styles.presetChipText}>닫기</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* 마지막 메시지가 선택지 질문(AskUserQuestion)이면 탭 한 번으로 답하는 버튼 */}
         {(() => {
           const last = chat.messages.at(-1);
@@ -663,32 +859,49 @@ export default function Chat() {
             disabled={running}
             style={{ transform: [{ scale: 0.85 }] }}
           />
+          <Pressable onPress={pickModel}>
+            <Text style={[styles.planLabel, model ? { color: t.accent, fontWeight: "700" } : null]}>
+              {model || "모델"}
+            </Text>
+          </Pressable>
+          <Text style={styles.planLabel}>승인</Text>
+          <Switch
+            value={approval}
+            onValueChange={setApproval}
+            disabled={running}
+            style={{ transform: [{ scale: 0.85 }] }}
+          />
         </View>
-        <Pressable style={styles.attachButton} onPress={pickImages} disabled={running || uploading || images.length >= 3}>
+        <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
+        </Pressable>
+        <Pressable style={styles.attachButton} onPress={openDevServerPreview}>
+          <Text style={styles.attachButtonText}>🌐</Text>
+        </Pressable>
+        <Pressable style={styles.attachButton} onPress={toggleMic}>
+          <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
         <TextInput
           style={styles.input}
           multiline
           value={prompt}
           onChangeText={setPrompt}
-          editable={!running}
+          editable={!uploading}
           placeholder="메시지를 입력하세요"
           placeholderTextColor={t.placeholder}
         />
+        <Pressable
+          style={styles.sendButton}
+          onPress={() => handleSend()}
+          disabled={(!prompt.trim() && images.length === 0) || uploading}
+        >
+          <Text style={styles.buttonText}>{uploading ? "업로드…" : running ? "큐잉" : "전송"}</Text>
+        </Pressable>
         {running ? (
           <Pressable style={styles.cancelButton} onPress={handleCancel}>
             <Text style={styles.buttonText}>취소</Text>
           </Pressable>
-        ) : (
-          <Pressable
-            style={styles.sendButton}
-            onPress={() => handleSend()}
-            disabled={(!prompt.trim() && images.length === 0) || uploading}
-          >
-            <Text style={styles.buttonText}>{uploading ? "업로드…" : "전송"}</Text>
-          </Pressable>
-        )}
+        ) : null}
         </View>
       </KeyboardStickyView>
     </View>
@@ -756,6 +969,57 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   presetChipText: {
     color: t.chipText,
     fontSize: 12,
+  },
+  todoBar: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+    backgroundColor: t.box,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  todoTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: t.text,
+  },
+  todoItem: {
+    fontSize: 12,
+    color: t.subtext,
+    marginTop: 2,
+  },
+  permCard: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: t.border,
+    backgroundColor: t.box,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  permTitle: {
+    fontWeight: "700",
+    color: t.text,
+  },
+  permBody: {
+    fontSize: 12,
+    fontFamily: "monospace",
+    color: t.subtext,
+  },
+  permButtons: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  permAllow: {
+    backgroundColor: "#1f9d55",
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  permDeny: {
+    backgroundColor: "#c0392b",
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
   },
   jumpDownButton: {
     position: "absolute",

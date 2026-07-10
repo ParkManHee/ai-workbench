@@ -20,7 +20,11 @@ impl DeviceStore {
             .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     fn write(&self, v: &[Device]) {
-        if let Ok(s) = serde_json::to_string_pretty(v) { let _ = fs::write(&self.path, s); }
+        // 원자적 교체(temp+rename) — 쓰기 중 크래시로 기기 파일이 깨져 전 기기 로그아웃되는 것 방지
+        if let Ok(s) = serde_json::to_string_pretty(v) {
+            let tmp = format!("{}.tmp", self.path);
+            if fs::write(&tmp, s).is_ok() { let _ = fs::rename(&tmp, &self.path); }
+        }
     }
     pub fn list(&self) -> Vec<Device> { self.read() }
     pub fn add(&self, raw_token: &str, label: &str) -> Device {

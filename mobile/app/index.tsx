@@ -2,7 +2,7 @@ import { useCallback, useState, useMemo } from "react";
 import { Alert, Button, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { makeClient } from "../src/lib/api";
+import { EXPECTED_API_VERSION, makeClient } from "../src/lib/api";
 import type { PC, Project } from "../src/lib/types";
 import { loadPCs, removePC } from "../src/store/pcs";
 import { useTheme, type Theme } from "../src/lib/theme";
@@ -27,6 +27,8 @@ export default function Index() {
   const [pcs, setPcs] = useState<PC[] | null | undefined>(undefined);
   // PC별 활동 요약(대시보드): pcId → 요약 문자열("" = 활동 없음, undefined = 조회 전/실패)
   const [statusById, setStatusById] = useState<Record<string, string>>({});
+  // PC별 버전 불일치 경고(api_version ≠ 앱 기대값)
+  const [versionWarnById, setVersionWarnById] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     const list = await loadPCs();
@@ -39,8 +41,20 @@ export default function Index() {
     // 각 PC의 프로젝트 상태를 병렬 best-effort 조회(오프라인 PC는 조용히 스킵)
     list.forEach(async (pc) => {
       try {
-        const projects: Project[] = await makeClient(pc.baseUrl, pc.token).projects();
+        const client = makeClient(pc.baseUrl, pc.token);
+        const [projects, info] = await Promise.all([client.projects() as Promise<Project[]>, client.info()]);
         setStatusById((prev) => ({ ...prev, [pc.id]: statusLine(projects) }));
+        setVersionWarnById((prev) => {
+          const next = { ...prev };
+          if (info.api_version !== undefined && info.api_version !== EXPECTED_API_VERSION) {
+            next[pc.id] = info.api_version > EXPECTED_API_VERSION
+              ? "⚠️ 앱 업데이트 필요 (데몬이 더 최신)"
+              : "⚠️ 데몬 업데이트 필요 (앱이 더 최신)";
+          } else {
+            delete next[pc.id];
+          }
+          return next;
+        });
       } catch {
         setStatusById((prev) => {
           const next = { ...prev };
@@ -64,10 +78,14 @@ export default function Index() {
   }
 
   function handleLongPress(pc: PC) {
-    Alert.alert("PC 삭제", `"${pc.label}"을(를) 목록에서 삭제할까요?`, [
+    Alert.alert(pc.label, "무엇을 할까요?", [
       { text: "취소", style: "cancel" },
       {
-        text: "삭제",
+        text: "페어링 기기 관리",
+        onPress: () => router.push({ pathname: "/devices", params: { pc: pc.id } }),
+      },
+      {
+        text: "목록에서 삭제",
         style: "destructive",
         onPress: async () => {
           await removePC(pc.id);
@@ -107,6 +125,9 @@ export default function Index() {
               <Text style={styles.statusLine}>{statusById[item.id]}</Text>
             ) : statusById[item.id] === "" ? (
               <Text style={styles.statusIdle}>활동 중인 프로젝트 없음</Text>
+            ) : null}
+            {versionWarnById[item.id] ? (
+              <Text style={styles.versionWarn}>{versionWarnById[item.id]}</Text>
             ) : null}
           </Pressable>
         )}
@@ -154,5 +175,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     fontSize: 12,
     color: t.subtext,
     marginTop: 6,
+  },
+  versionWarn: {
+    fontSize: 12,
+    color: "#e67e22",
+    marginTop: 4,
   },
 });
