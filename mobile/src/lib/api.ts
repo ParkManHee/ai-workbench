@@ -14,6 +14,9 @@ export function isUnauthorized(e: unknown): boolean {
   return e instanceof HttpError && e.status === 401;
 }
 
+/** 이 앱이 아는 데몬 프로토콜 버전 — /info.api_version과 다르면 업데이트 배너. */
+export const EXPECTED_API_VERSION = 2;
+
 export function pairUrl(baseUrl: string, code: string) { return `${baseUrl}/pair?code=${encodeURIComponent(code)}`; }
 export function streamUrl(baseUrl: string, runId: string, offset: number, token: string) {
   const ws = baseUrl.replace(/^http/, "ws");
@@ -41,7 +44,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     },
     permissionAnswer: (id: string, allow: boolean) =>
       f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow }) } as any),
-    info: (): Promise<{ hostname: string }> => jget("/info"),
+    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),

@@ -37,6 +37,7 @@ impl RunRegistry {
     pub fn remove(&self, run_id: &str) {
         self.inner.lock().unwrap().remove(run_id);
     }
+    pub fn count(&self) -> usize { self.inner.lock().unwrap().len() }
     /// 프로젝트의 활성 run(있다면) — 앱 재시작/타 기기에서 진행 중 실행에 attach(취소 등)할 때 사용.
     pub fn active_for_project(&self, project: &str) -> Option<(String, RunMeta)> {
         self.inner.lock().unwrap().iter()

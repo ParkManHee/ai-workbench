@@ -58,6 +58,7 @@ async fn serve() {
         perms: perm::PermStore::new(),
         perm_secret: pairing::random_token(),
         base_url: format!("http://{addr}"),
+        started_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };

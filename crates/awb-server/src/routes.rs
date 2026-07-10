@@ -33,7 +33,13 @@ pub struct AppState {
     pub perm_secret: String,
     /// 데몬 자신의 base url — 스폰한 MCP 스크립트에 전달
     pub base_url: String,
+    /// 데몬 시작 시각(epoch초) — /info uptime용
+    pub started_at: u64,
 }
+
+/// 폰↔데몬 프로토콜 버전 — 폰이 자신이 아는 버전과 비교해 업데이트 배너를 띄운다.
+/// (호환이 깨지는 API 변경 시 올린다: 2 = 턴큐잉/권한승인/기기관리 추가)
+pub const API_VERSION: u32 = 2;
 
 /// 로그 경로에서 run_id 파생(파일명 stem) — chat/queue 공용.
 pub fn run_id_of(log: &str) -> String {
@@ -237,7 +243,13 @@ pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::pre
 }
 
 #[derive(Serialize)]
-pub struct InfoDto { pub hostname: String }
+pub struct InfoDto {
+    pub hostname: String,
+    pub version: String,
+    pub api_version: u32,
+    pub uptime_secs: u64,
+    pub active_runs: usize,
+}
 
 /// macOS 친숙한 이름(`scutil --get ComputerName`) → 실패 시 `hostname` 명령 → 최종 폴백 `"Mac"`.
 /// 폰이 여러 PC를 페어링했을 때 목록에 표시할 라벨로 사용한다.
@@ -259,8 +271,15 @@ pub fn resolve_hostname() -> String {
     "Mac".to_string()
 }
 
-pub async fn info_handler() -> Json<InfoDto> {
-    Json(InfoDto { hostname: resolve_hostname() })
+pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    Json(InfoDto {
+        hostname: resolve_hostname(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        api_version: API_VERSION,
+        uptime_secs: now.saturating_sub(st.started_at),
+        active_runs: st.runs.count(),
+    })
 }
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
@@ -386,6 +405,7 @@ mod tests {
             perms: crate::perm::PermStore::new(),
             perm_secret: "test-perm-secret".to_string(),
             base_url: "http://127.0.0.1:0".to_string(),
+            started_at: 0,
         }
     }
 
