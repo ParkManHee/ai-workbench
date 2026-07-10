@@ -13,7 +13,7 @@
 
 ## Tier 2 — 무인 운영 안정화
 
-- [ ] 데몬 launchd 상주화 (RunAtLoad + KeepAlive + 파일 로그) (M)
+- [x] 데몬 launchd 상주화 (RunAtLoad + KeepAlive + 파일 로그) (M)
 - [ ] `.awb-runs`/`.awb-uploads` GC — N일/M개 초과 정리 (S)
 - [ ] 페어링 기기 관리 — GET /devices + revoke 라우트 + 폰 설정 UI (M)
 - [ ] 데몬 진단 /diag — 버전·uptime·활성 run·최근 에러 + tracing 파일 로깅 (M)
