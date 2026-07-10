@@ -183,6 +183,15 @@ export default function Chat() {
     }
   }
 
+  // 실행 중 diff 미리보기 — 완료를 기다리지 않고 10초 간격으로 변경 요약 갱신
+  useEffect(() => {
+    if (!chat.running || !pc) return;
+    fetchDiff(pc);
+    const iv = setInterval(() => fetchDiff(pc), 10000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.running, pc]);
+
   // 승인 대기 폴: 화면이 떠 있는 동안 이 프로젝트의 권한 요청을 2.5초 간격으로 확인
   useEffect(() => {
     if (!pc) return;
