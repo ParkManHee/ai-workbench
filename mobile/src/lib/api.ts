@@ -43,7 +43,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
       const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);
-      return (r as any).json() as Promise<{ run_id: string; log: string }>;
+      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
     /** 첨부 이미지 업로드(base64 → raw bytes) → Mac 저장 절대경로를 반환받는다.

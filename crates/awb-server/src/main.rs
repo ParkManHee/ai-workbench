@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod push;
+mod queue;
 mod routes;
 mod runreg;
 mod sessions;
@@ -48,6 +49,7 @@ async fn serve() {
         claude_bin,
         settings_path: cfg.settings_path.clone(),
         runs_dir: cfg.runs_dir.clone(),
+        queue: queue::TurnQueue::new(),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };

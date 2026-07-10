@@ -388,7 +388,7 @@ export default function Chat() {
   async function handleSend(overrideText?: string) {
     if (!pc || !client || !project) return;
     const text = (overrideText ?? prompt).trim();
-    if ((!text && images.length === 0) || chat.running || uploading) return;
+    if ((!text && images.length === 0) || uploading) return; // 실행 중에도 전송 허용(서버가 큐잉)
 
     setSendError(null);
     // 이전 버전 코드로 선택된 이미지(base64 없음)가 핫리로드로 상태에 남아있을 수 있다
@@ -416,24 +416,35 @@ export default function Chat() {
       }
     }
 
-    stopPoll(); // the user's own run now drives the live view
-    setDiff(null);
-    setPrompt("");
-    setImages([]);
-    reconnectsRef.current = 0;
-
     // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
     const fullPrompt = paths.length
       ? `${text}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
       : text;
     const shown = paths.length ? `${text}${text ? "\n" : ""}🖼 이미지 ${paths.length}장` : text;
     const userMsg: ChatMsg = { role: "user", text: shown };
-    setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
 
     try {
-      const { run_id } = await client.chat(project, fullPrompt, plan, session);
-      runIdRef.current = run_id;
-      connectWs(run_id, pc);
+      const res = await client.chat(project, fullPrompt, plan, session);
+      setPrompt("");
+      setImages([]);
+      if (res.queued) {
+        // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
+        setChat((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            userMsg,
+            { role: "assistant", text: `⏳ 실행 중이라 대기열에 등록했습니다 (순번 ${res.position ?? 1}). 현재 턴이 끝나면 자동으로 전달됩니다.` },
+          ],
+        }));
+        return;
+      }
+      stopPoll(); // the user's own run now drives the live view
+      setDiff(null);
+      reconnectsRef.current = 0;
+      setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
+      runIdRef.current = res.run_id!;
+      connectWs(res.run_id!, pc);
     } catch (e) {
       if (isUnauthorized(e)) {
         // Token revoked/invalid → drop this PC and send the user back to the PC list.
@@ -442,7 +453,6 @@ export default function Chat() {
         return;
       }
       setSendError("전송 실패. 다시 시도해주세요.");
-      setChat((prev) => ({ ...prev, running: false }));
     }
   }
 
@@ -664,7 +674,7 @@ export default function Chat() {
             style={{ transform: [{ scale: 0.85 }] }}
           />
         </View>
-        <Pressable style={styles.attachButton} onPress={pickImages} disabled={running || uploading || images.length >= 3}>
+        <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
         </Pressable>
         <TextInput
@@ -672,23 +682,22 @@ export default function Chat() {
           multiline
           value={prompt}
           onChangeText={setPrompt}
-          editable={!running}
+          editable={!uploading}
           placeholder="메시지를 입력하세요"
           placeholderTextColor={t.placeholder}
         />
+        <Pressable
+          style={styles.sendButton}
+          onPress={() => handleSend()}
+          disabled={(!prompt.trim() && images.length === 0) || uploading}
+        >
+          <Text style={styles.buttonText}>{uploading ? "업로드…" : running ? "큐잉" : "전송"}</Text>
+        </Pressable>
         {running ? (
           <Pressable style={styles.cancelButton} onPress={handleCancel}>
             <Text style={styles.buttonText}>취소</Text>
           </Pressable>
-        ) : (
-          <Pressable
-            style={styles.sendButton}
-            onPress={() => handleSend()}
-            disabled={(!prompt.trim() && images.length === 0) || uploading}
-          >
-            <Text style={styles.buttonText}>{uploading ? "업로드…" : "전송"}</Text>
-          </Pressable>
-        )}
+        ) : null}
         </View>
       </KeyboardStickyView>
     </View>

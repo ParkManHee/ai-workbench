@@ -25,6 +25,13 @@ pub struct AppState {
     pub push: PushStore,
     /// 폰에서 올린 첨부 이미지 저장 디렉터리(경로는 서버가 결정 — 클라이언트 주입 불가)
     pub uploads_dir: String,
+    /// 실행 중 도착한 후속 턴 큐(프로젝트별) — 현재 턴 종료 시 자동 실행
+    pub queue: crate::queue::TurnQueue,
+}
+
+/// 로그 경로에서 run_id 파생(파일명 stem) — chat/queue 공용.
+pub fn run_id_of(log: &str) -> String {
+    log.rsplit('/').next().unwrap_or(log).trim_end_matches(".log").to_string()
 }
 
 #[derive(Serialize)]
@@ -79,7 +86,13 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 #[derive(serde::Deserialize)]
 pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String> }
 #[derive(Serialize)]
-pub struct ChatResult { pub run_id: String, pub log: String }
+pub struct ChatResult {
+    pub run_id: Option<String>,
+    pub log: Option<String>,
+    /// true면 실행 중이라 큐에 적재됨(position = 대기 순번). 현재 턴 종료 시 자동 실행.
+    pub queued: bool,
+    pub position: Option<usize>,
+}
 
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
@@ -87,12 +100,21 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
     let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
-    let h = awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir)
-        .map_err(|e| (StatusCode::CONFLICT, e))?;
-    let run_id = h.log.rsplit('/').next().unwrap_or(&h.log).trim_end_matches(".log").to_string();
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir) {
+        Ok(h) => h,
+        // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
+        Err(e) if e.contains("이미 실행 중") => {
+            let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(),
+            });
+            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
+        }
+        Err(e) => return Err((StatusCode::CONFLICT, e)),
+    };
+    let run_id = run_id_of(&h.log);
     st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
-    Ok(Json(ChatResult { run_id, log: h.log }))
+    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None }))
 }
 
 pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<Json<awb_core::runlog::RunStatus>, StatusCode> {
@@ -252,6 +274,7 @@ mod tests {
             runs_dir: std::env::temp_dir().join("awb_routes_test_runs").to_string_lossy().to_string(),
             push: crate::push::PushStore::load(&std::env::temp_dir().join("awb_routes_test_push.json").to_string_lossy().to_string()),
             uploads_dir: std::env::temp_dir().join("awb_routes_test_uploads").to_string_lossy().to_string(),
+            queue: crate::queue::TurnQueue::new(),
         }
     }
 
