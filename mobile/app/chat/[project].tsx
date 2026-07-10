@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -102,6 +103,9 @@ export default function Chat() {
   // plan 실행 완료 후 "이 계획대로 진행" 원탭 칩
   const [showPlanApprove, setShowPlanApprove] = useState(false);
   const planAtSendRef = useRef(false);
+  // 음성 입력(STT): 받아쓰기 시작 시점의 기존 입력을 보존하고 인식 결과를 이어붙인다
+  const [listening, setListening] = useState(false);
+  const dictationBaseRef = useRef("");
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -213,6 +217,29 @@ export default function Chat() {
       await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
     } catch {
       // 실패 시 다음 폴에서 다시 나타난다
+    }
+  }
+
+  useSpeechRecognitionEvent("result", (e) => {
+    const t = e.results?.[0]?.transcript ?? "";
+    setPrompt(`${dictationBaseRef.current}${dictationBaseRef.current && t ? " " : ""}${t}`);
+  });
+  useSpeechRecognitionEvent("end", () => setListening(false));
+  useSpeechRecognitionEvent("error", () => setListening(false));
+
+  async function toggleMic() {
+    if (listening) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+    try {
+      const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!perm.granted) return;
+      dictationBaseRef.current = prompt.trim();
+      setListening(true);
+      ExpoSpeechRecognitionModule.start({ lang: "ko-KR", interimResults: true });
+    } catch {
+      setListening(false);
     }
   }
 
@@ -806,6 +833,9 @@ export default function Chat() {
         </Pressable>
         <Pressable style={styles.attachButton} onPress={openDevServerPreview}>
           <Text style={styles.attachButtonText}>🌐</Text>
+        </Pressable>
+        <Pressable style={styles.attachButton} onPress={toggleMic}>
+          <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
         <TextInput
           style={styles.input}
