@@ -93,14 +93,27 @@ pub fn send(tokens: &[String], title: &str, body: &str, data: &serde_json::Value
 
 /// run 완료를 폴링하다 완료되면 run_status로 락을 해제하고, notified 게이트를 통과할 때만 푸시를 보낸다.
 /// 순서: done 감지 → run_status(락 해제, WS 미접속으로 인한 락 잔류 방지) → should_push 게이트 → (필요시) send.
+/// hung run 상한(초). claude가 멈춰도 락이 무기한 잡히지 않게 워처가 강제 종료한다.
+fn run_timeout_secs() -> u64 {
+    std::env::var("AWB_RUN_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600)
+}
+
 pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
     tokio::spawn(async move {
         let meta = match st.runs.get(&run_id) {
             Some(m) => m,
             None => return,
         };
+        let timeout = run_timeout_secs();
+        let started = std::time::Instant::now();
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
+            if !chunk.done && started.elapsed().as_secs() >= timeout {
+                // hung run: 그룹 종료 + 타임아웃 코드 기록 → 다음 틱에 done 경로(락 해제·푸시)로 수렴
+                eprintln!("run {run_id} 타임아웃({timeout}s) — 프로세스 그룹 강제 종료");
+                awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
+                awb_core::runlog::mark_done_if_absent(&meta.log, 124);
+            }
             if chunk.done {
                 let status = awb_core::runlog::run_status(&meta.log, &meta.workdir);
                 // WS가 붙어있지 않은 push-only 완료 경로에서도 --resume용 session_id를 캡처한다.

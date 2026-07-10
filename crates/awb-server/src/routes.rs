@@ -100,21 +100,11 @@ pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<Strin
     Ok(Json(awb_core::runlog::run_status(&meta.log, &meta.workdir)))
 }
 
-/// `<log>.done` 마커가 없을 때만 `code`를 기록한다(이미 존재하면 실제 종료코드를 덮어쓰지 않음).
-/// cancel_handler에서 사용: 프로세스 그룹을 SIGTERM/SIGKILL하면 래퍼 sh가 `.done`을 쓰기 전에
-/// 죽을 수 있어 WS/워처가 완료를 관측하지 못하는데, 그 경우를 여기서 보정한다.
-fn mark_done_if_absent(log: &str, code: i32) {
-    let done_path = format!("{log}.done");
-    if !std::path::Path::new(&done_path).exists() {
-        let _ = std::fs::write(&done_path, code.to_string());
-    }
-}
-
 pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<StatusCode, StatusCode> {
     let meta = st.runs.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
     let dead = awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
     // SIGTERM/SIGKILL로 그룹 전체가 죽으면 래퍼가 .done을 못 쓸 수 있으므로, 취소를 관측 가능하게 직접 기록한다(128+SIGTERM=143).
-    mark_done_if_absent(&meta.log, 143);
+    awb_core::runlog::mark_done_if_absent(&meta.log, 143);
     Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
 }
 
