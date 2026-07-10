@@ -64,10 +64,14 @@ export default function Index() {
   }
 
   function handleLongPress(pc: PC) {
-    Alert.alert("PC 삭제", `"${pc.label}"을(를) 목록에서 삭제할까요?`, [
+    Alert.alert(pc.label, "무엇을 할까요?", [
       { text: "취소", style: "cancel" },
       {
-        text: "삭제",
+        text: "페어링 기기 관리",
+        onPress: () => router.push({ pathname: "/devices", params: { pc: pc.id } }),
+      },
+      {
+        text: "목록에서 삭제",
         style: "destructive",
         onPress: async () => {
           await removePC(pc.id);

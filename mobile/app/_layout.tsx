@@ -97,6 +97,7 @@ export default function RootLayout() {
           {/* sessions/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
           <Stack.Screen name="sessions/[project]" options={{ title: "세션" }} />
           <Stack.Screen name="pair" options={{ title: "페어링" }} />
+          <Stack.Screen name="devices" options={{ title: "페어링 기기" }} />
           {/* chat/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
           <Stack.Screen name="chat/[project]" options={{ title: "실행" }} />
         </Stack>

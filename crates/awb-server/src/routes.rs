@@ -219,6 +219,19 @@ pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<
     }
 }
 
+#[derive(Serialize)]
+pub struct DeviceDto { pub id: String, pub label: String, pub paired_at: u64 }
+
+/// 페어링된 기기 목록(해시 제외) — 분실 기기 확인·회수용.
+pub async fn devices_handler(State(st): State<AppState>) -> Json<Vec<DeviceDto>> {
+    Json(st.devices.list().into_iter().map(|d| DeviceDto { id: d.id, label: d.label, paired_at: d.paired_at }).collect())
+}
+
+/// 기기 토큰 회수 — 해당 기기는 즉시 401(재페어링 필요).
+pub async fn device_revoke_handler(State(st): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    if st.devices.remove(&id) { StatusCode::OK } else { StatusCode::NOT_FOUND }
+}
+
 pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::preflight::Preflight> {
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
@@ -325,6 +338,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/status/{run_id}", get(status_handler))
         .route("/runs/active/{project}", get(active_run_handler))
         .route("/permission/pending/{project}", get(permission_pending_handler))
+        .route("/devices", get(devices_handler))
+        .route("/devices/{id}/revoke", post(device_revoke_handler))
         .route("/permission/answer", post(permission_answer_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
