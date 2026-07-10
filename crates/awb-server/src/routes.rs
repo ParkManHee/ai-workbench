@@ -130,6 +130,15 @@ pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<Strin
     Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
 }
 
+/// 프로젝트의 활성 run 조회 — 폰이 재진입/타 기기에서 진행 중 실행에 attach(취소·대기표시)할 수 있게.
+/// 활성 run이 없으면 200 + {run_id: null} ("없음"은 정상 상태라 404가 아님).
+pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
+    match st.runs.active_for_project(&project) {
+        Some((run_id, _)) => Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project) })),
+        None => Json(serde_json::json!({ "run_id": null, "queued": st.queue.len(&project) })),
+    }
+}
+
 pub async fn preflight_handler(State(st): State<AppState>) -> Json<awb_core::preflight::Preflight> {
     Json(awb_core::preflight::run_preflight(&st.roots, Some(st.claude_bin.clone())))
 }
@@ -234,6 +243,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/awake", post(awake_handler))
         .route("/chat/{project}", post(chat_handler))
         .route("/status/{run_id}", get(status_handler))
+        .route("/runs/active/{project}", get(active_run_handler))
         .route("/cancel/{run_id}", post(cancel_handler))
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))

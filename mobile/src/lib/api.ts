@@ -30,6 +30,8 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     diffFile: (path: string, file: string): Promise<{ file: string; diff: string }> =>
       jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
     status: (runId: string) => jget(`/status/${runId}`),
+    activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
+      jget(`/runs/active/${encodeURIComponent(project)}`),
     info: (): Promise<{ hostname: string }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>

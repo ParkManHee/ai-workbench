@@ -162,6 +162,19 @@ export default function Chat() {
     }
   }, [kbVisible]);
 
+  // 진행 중 실행(다른 기기/이전 세션에서 시작)에 attach — 취소 버튼이 동작하게 한다.
+  async function attachActiveRun(p: PC) {
+    try {
+      const r = await makeClient(p.baseUrl, p.token).activeRun(project);
+      if (r.run_id && doneRef.current) {
+        runIdRef.current = r.run_id;
+        setChat((prev) => ({ ...prev, running: true }));
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
   // Stop the active-session poll (unmount, or the user starts their own run).
   function stopPoll() {
     if (pollRef.current) {
@@ -185,7 +198,14 @@ export default function Chat() {
         if (res.messages.length > 0) {
           setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
         }
-        if (!res.active) stopPoll();
+        if (!res.active) {
+          stopPoll();
+          // attach 상태 해제(원격 실행 종료)
+          if (doneRef.current) {
+            runIdRef.current = null;
+            setChat((prev) => (prev.running ? { ...prev, running: false } : prev));
+          }
+        }
       } catch (e) {
         if (isUnauthorized(e)) {
           stopPoll();
@@ -243,7 +263,10 @@ export default function Chat() {
         nextLineRef.current = res.next;
         prevRef.current = res.prev;
         setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
-        if (res.active) startPoll(pc);
+        if (res.active) {
+          startPoll(pc);
+          attachActiveRun(pc); // 진행 중 실행이 있으면 취소 가능하게 attach
+        }
       })
       .catch(async (e) => {
         if (cancelled) return;
