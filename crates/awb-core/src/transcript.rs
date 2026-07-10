@@ -38,6 +38,9 @@ pub struct TranscriptMsg {
     /// AskUserQuestion의 선택지 라벨 — 앱이 탭 한 번으로 답할 수 있게 버튼으로 렌더
     #[serde(default)]
     pub options: Vec<String>,
+    /// TodoWrite의 작업 목록("✔/▶/· 내용") — 앱이 진행 카드로 렌더
+    #[serde(default)]
+    pub todos: Vec<String>,
 }
 
 /// UTF-8 안전 절단(문자 기준) — 바이트 슬라이스는 멀티바이트 경계에서 패닉.
@@ -47,11 +50,11 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     format!("{t}…")
 }
 
-fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>) {
+fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     match v {
-        Value::String(s) => (s.clone(), vec![], vec![], vec![]),
+        Value::String(s) => (s.clone(), vec![], vec![], vec![], vec![]),
         Value::Array(arr) => {
-            let mut text = String::new(); let mut tools = vec![]; let mut details = vec![]; let mut options = vec![];
+            let mut text = String::new(); let mut tools = vec![]; let mut details = vec![]; let mut options = vec![]; let mut todos = vec![];
             for it in arr {
                 match it.get("type").and_then(|t| t.as_str()) {
                     Some("text") => if let Some(t) = it.get("text").and_then(|x| x.as_str()) { text.push_str(t); },
@@ -73,6 +76,18 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>) {
                                 }
                             }
                         }
+                        // TodoWrite: 진행 카드용 목록 추출(마지막 것이 최신 상태)
+                        if n == "TodoWrite" {
+                            if let Some(items) = it.get("input").and_then(|i| i.get("todos")).and_then(|t| t.as_array()) {
+                                todos = items.iter().filter_map(|t| {
+                                    let c = t.get("content").and_then(|x| x.as_str())?;
+                                    let mark = match t.get("status").and_then(|x| x.as_str()).unwrap_or("") {
+                                        "completed" => "✔", "in_progress" => "▶", _ => "·",
+                                    };
+                                    Some(format!("{mark} {c}"))
+                                }).collect();
+                            }
+                        }
                         // 상세(입력 요약): 앱에서 "작업" 버튼 펼침 시 표시
                         let d = it.get("input").map(|i| truncate_chars(&i.to_string(), 300)).unwrap_or_default();
                         details.push(if d.is_empty() { n.to_string() } else { format!("{n}: {d}") });
@@ -80,9 +95,9 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>) {
                     _ => {}
                 }
             }
-            (text, tools, details, options)
+            (text, tools, details, options, todos)
         }
-        _ => (String::new(), vec![], vec![], vec![]),
+        _ => (String::new(), vec![], vec![], vec![], vec![]),
     }
 }
 
@@ -104,7 +119,7 @@ fn enqueued_user_text(v: &Value) -> Option<String> {
     Some(c.to_string())
 }
 fn queued_msg(text: String) -> TranscriptMsg {
-    TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![], options: vec![] }
+    TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![], options: vec![], todos: vec![] }
 }
 
 /// user/assistant 라인 → 표시 메시지. 메타(스킬/훅 본문)·사이드체인(서브에이전트)·하네스 주입 텍스트는 숨긴다.
@@ -112,10 +127,10 @@ fn parse_msg_line(v: &Value) -> Option<TranscriptMsg> {
     let r = match v.get("type").and_then(|t| t.as_str()) { Some(r @ ("user" | "assistant")) => r, _ => return None };
     if v.get("isMeta").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
     if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { return None; }
-    let (text, tools, tool_details, options) = parse_content(v.get("message")?.get("content")?);
+    let (text, tools, tool_details, options, todos) = parse_content(v.get("message")?.get("content")?);
     if text.is_empty() && tools.is_empty() { return None; }
     if r == "user" && is_noise_text(&text) { return None; }
-    Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details, options })
+    Some(TranscriptMsg { role: r.to_string(), text, tools, tool_details, options, todos })
 }
 
 /// enqueue로 이미 표시한 메시지가 턴 종료 후 실제 user 라인으로 재기록(dequeue)된 경우 중복 억제.

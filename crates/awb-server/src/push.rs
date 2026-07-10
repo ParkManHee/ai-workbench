@@ -175,15 +175,15 @@ mod tests {
     #[test]
     fn push_content_distinguishes_question_from_done() {
         use awb_core::transcript::TranscriptMsg;
-        let q = TranscriptMsg { role: "assistant".into(), text: "어느 방식으로 진행할까요?".into(), tools: vec![], tool_details: vec![], options: vec![] };
+        let q = TranscriptMsg { role: "assistant".into(), text: "어느 방식으로 진행할까요?".into(), tools: vec![], tool_details: vec![], options: vec![], todos: vec![] };
         let (t, b) = push_content("proj", "success", Some(&q));
         assert!(t.contains("질문 대기"), "{t}");
         assert!(b.contains("어느 방식"));
         // 선택지가 있으면 '?'로 안 끝나도 질문
-        let opt = TranscriptMsg { role: "assistant".into(), text: "방식을 골라주세요".into(), tools: vec![], tool_details: vec![], options: vec!["A".into()] };
+        let opt = TranscriptMsg { role: "assistant".into(), text: "방식을 골라주세요".into(), tools: vec![], tool_details: vec![], options: vec!["A".into()], todos: vec![] };
         assert!(push_content("proj", "success", Some(&opt)).0.contains("질문 대기"));
         // 평서문 완료는 verdict 푸시
-        let done = TranscriptMsg { role: "assistant".into(), text: "완료했습니다.".into(), tools: vec![], tool_details: vec![], options: vec![] };
+        let done = TranscriptMsg { role: "assistant".into(), text: "완료했습니다.".into(), tools: vec![], tool_details: vec![], options: vec![], todos: vec![] };
         let (t2, b2) = push_content("proj", "success(변경 3)", Some(&done));
         assert!(t2.starts_with("✅"), "{t2}");
         assert_eq!(b2, "success(변경 3)");

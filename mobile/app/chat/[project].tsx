@@ -37,7 +37,7 @@ const PROMPT_PRESETS = [
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
-  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options };
+  return { role: m.role === "user" ? "user" : "assistant", text: m.text, tools: m.tools, toolDetails: m.tool_details, options: m.options, todos: m.todos };
 }
 
 interface DiffEntry {
@@ -109,6 +109,7 @@ export default function Chat() {
   const dictationBaseRef = useRef("");
   // 모델 오버라이드("" = 기본): 긴 작업 전 상위/하위 모델 전환
   const [model, setModel] = useState("");
+  const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -622,6 +623,23 @@ export default function Chat() {
           </Text>
         </View>
       ) : null}
+      {(() => {
+        const withTodos = [...chat.messages].reverse().find((m) => m.todos && m.todos.length > 0);
+        const todos = withTodos?.todos ?? [];
+        if (todos.length === 0) return null;
+        const doneN = todos.filter((x) => x.startsWith("✔")).length;
+        const cur = todos.find((x) => x.startsWith("▶"));
+        return (
+          <Pressable style={styles.todoBar} onPress={() => setTodoOpen((v) => !v)}>
+            <Text style={styles.todoTitle}>
+              ☑ 진행 {doneN}/{todos.length}{cur ? ` · ${cur.slice(2)}` : ""} {todoOpen ? "▲" : "▼"}
+            </Text>
+            {todoOpen ? todos.map((x, i) => (
+              <Text key={i} style={styles.todoItem}>{x}</Text>
+            )) : null}
+          </Pressable>
+        );
+      })()}
       <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
@@ -770,6 +788,14 @@ export default function Chat() {
             </View>
           </View>
         ))}
+        {/* 실행 종료 + 변경 있음 → 커밋 원탭 */}
+        {!chat.running && diff && diff.files > 0 ? (
+          <View style={styles.optionRow}>
+            <Pressable style={styles.optionChip} onPress={() => handleSend("변경사항을 확인해서 적절한 메시지로 커밋하고 푸시해줘.")}>
+              <Text style={styles.optionChipText}>📦 커밋+푸시</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {/* plan 완료 → 원탭 실행 승인 */}
         {showPlanApprove && !chat.running ? (
           <View style={styles.optionRow}>
@@ -943,6 +969,23 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   presetChipText: {
     color: t.chipText,
     fontSize: 12,
+  },
+  todoBar: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+    backgroundColor: t.box,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  todoTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: t.text,
+  },
+  todoItem: {
+    fontSize: 12,
+    color: t.subtext,
+    marginTop: 2,
   },
   permCard: {
     borderTopWidth: StyleSheet.hairlineWidth,
