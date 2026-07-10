@@ -15,7 +15,7 @@
 
 - [x] 데몬 launchd 상주화 (RunAtLoad + KeepAlive + 파일 로그) (M)
 - [x] `.awb-runs`/`.awb-uploads` GC — N일/M개 초과 정리 (S)
-- [ ] 페어링 기기 관리 — GET /devices + revoke 라우트 + 폰 설정 UI (M)
+- [x] 페어링 기기 관리 — GET /devices + revoke 라우트 + 폰 설정 UI (M)
 - [ ] 데몬 진단 /diag — 버전·uptime·활성 run·최근 에러 + tracing 파일 로깅 (M)
 - [ ] 앱 버전 협상 — /info에 min_app_version, 폰 업데이트 배너 (M)
 
@@ -40,7 +40,7 @@
 
 ## Tier 5 — 폴리시 소품 (일괄 처리 후보)
 
-- [ ] DeviceStore 원자적 쓰기 (temp+rename)
+- [x] DeviceStore 원자적 쓰기 (temp+rename)
 - [ ] chat 에러 세분화 (409 사유 코드)
 - [ ] runlog UTF-8 청크 경계 하드닝
 - [ ] list_sessions 페이지네이션
