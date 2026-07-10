@@ -32,6 +32,7 @@ const PROMPT_PRESETS = [
   "코드리뷰 해줘",
   "커밋해줘",
   "작업로그 갱신해줘",
+  "/compact",
 ];
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
@@ -106,6 +107,8 @@ export default function Chat() {
   // 음성 입력(STT): 받아쓰기 시작 시점의 기존 입력을 보존하고 인식 결과를 이어붙인다
   const [listening, setListening] = useState(false);
   const dictationBaseRef = useRef("");
+  // 모델 오버라이드("" = 기본): 긴 작업 전 상위/하위 모델 전환
+  const [model, setModel] = useState("");
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -226,6 +229,16 @@ export default function Chat() {
   });
   useSpeechRecognitionEvent("end", () => setListening(false));
   useSpeechRecognitionEvent("error", () => setListening(false));
+
+  function pickModel() {
+    Alert.alert("모델", `현재: ${model || "기본"}`, [
+      { text: "기본(설정 따름)", onPress: () => setModel("") },
+      { text: "Opus", onPress: () => setModel("opus") },
+      { text: "Sonnet", onPress: () => setModel("sonnet") },
+      { text: "Haiku", onPress: () => setModel("haiku") },
+      { text: "취소", style: "cancel" },
+    ]);
+  }
 
   async function toggleMic() {
     if (listening) {
@@ -545,7 +558,7 @@ export default function Chat() {
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, session, approval);
+      const res = await client.chat(project, fullPrompt, planFlag, session, approval, model || undefined);
       setPrompt("");
       setImages([]);
       if (res.queued) {
@@ -820,6 +833,11 @@ export default function Chat() {
             disabled={running}
             style={{ transform: [{ scale: 0.85 }] }}
           />
+          <Pressable onPress={pickModel}>
+            <Text style={[styles.planLabel, model ? { color: t.accent, fontWeight: "700" } : null]}>
+              {model || "모델"}
+            </Text>
+          </Pressable>
           <Text style={styles.planLabel}>승인</Text>
           <Switch
             value={approval}

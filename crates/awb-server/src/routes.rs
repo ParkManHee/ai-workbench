@@ -96,7 +96,7 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String> }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -113,12 +113,12 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
     let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
     let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref()) {
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref()) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval,
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(),
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }

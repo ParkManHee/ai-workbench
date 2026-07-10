@@ -69,7 +69,7 @@ pub fn start_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, pr
     Ok(RunHandle { log, pgid })
 }
 
-pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, prompt: &str, resume: Option<&str>, runs_dir: &str, mcp_approval_cfg: Option<&str>) -> Result<RunHandle, String> {
+pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: bool, prompt: &str, resume: Option<&str>, runs_dir: &str, mcp_approval_cfg: Option<&str>, model: Option<&str>) -> Result<RunHandle, String> {
     let settings = crate::paths::expand_tilde(settings);
     let runs_dir = crate::paths::expand_tilde(runs_dir);
     let workdir_e = crate::paths::expand_tilde(workdir);
@@ -83,9 +83,10 @@ pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: b
     let plan_flag = if plan { "1" } else { "0" };
     let resume_arg = resume.unwrap_or("");
     let mcp_cfg = mcp_approval_cfg.unwrap_or("");
+    let model_arg = model.unwrap_or("");
     let child = unsafe {
         Command::new("sh")
-            .args([&wrapper, claude_bin, &workdir_e, &log, &settings, plan_flag, resume_arg, prompt, mcp_cfg])
+            .args([&wrapper, claude_bin, &workdir_e, &log, &settings, plan_flag, resume_arg, prompt, mcp_cfg, model_arg])
             .pre_exec(|| { libc::setsid(); Ok(()) })
             .stdin(std::process::Stdio::null())
             .spawn()
@@ -175,7 +176,7 @@ mod tests {
         let fake = std::env::temp_dir().join("fakeclaude_stream");
         std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
         #[cfg(unix)]{ use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); }
-        let h = start_stream_run(fake.to_str().unwrap(), dir.to_str().unwrap(), "/tmp/ws.json", false, "hi", Some("sess-1"), runs.to_str().unwrap(), None).unwrap();
+        let h = start_stream_run(fake.to_str().unwrap(), dir.to_str().unwrap(), "/tmp/ws.json", false, "hi", Some("sess-1"), runs.to_str().unwrap(), None, None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let log = std::fs::read_to_string(&h.log).unwrap_or_default();
         assert!(log.contains("--output-format stream-json"));
