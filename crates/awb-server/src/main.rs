@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod push;
+mod gc;
 mod launchd;
 mod perm;
 mod queue;
@@ -60,7 +61,8 @@ async fn serve() {
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
     };
-    let app = routes::router(state);
+    gc::spawn_gc(cfg.runs_dir.clone(), state.uploads_dir.clone());
+    let app = routes::router(state.clone());
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
