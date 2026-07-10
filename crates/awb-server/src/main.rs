@@ -4,6 +4,7 @@ mod gitdiff;
 mod pairing;
 mod power;
 mod push;
+mod launchd;
 mod perm;
 mod queue;
 mod routes;
@@ -17,7 +18,9 @@ async fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
     match arg.as_str() {
         "serve" => serve().await,
-        other => { eprintln!("알 수 없는 명령: {other} (지원: serve)"); std::process::exit(2); }
+        "install" => launchd::install(),
+        "uninstall" => launchd::uninstall(),
+        other => { eprintln!("알 수 없는 명령: {other} (지원: serve|install|uninstall)"); std::process::exit(2); }
     }
 }
 

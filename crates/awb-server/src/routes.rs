@@ -140,9 +140,11 @@ pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<Strin
 /// 승인 모드 실행용 MCP 설정 파일 생성(런마다) — claude가 이 설정으로 릴레이 MCP를 띄운다.
 pub fn write_approval_mcp_cfg(st: &AppState, project: &str) -> Option<String> {
     let script = format!("{}/awb-approval-mcp.cjs", awb_core::runner::scripts_dir());
+    // launchd 등 최소 PATH 환경에서도 node가 해석되도록 로그인셸 PATH에서 절대경로를 찾는다
+    let node = awb_core::shell_env::which_in(&awb_core::shell_env::login_path(), "node").unwrap_or_else(|| "node".to_string());
     let cfg = serde_json::json!({
         "mcpServers": { "awb-approval": {
-            "command": "node",
+            "command": node,
             "args": [script],
             "env": {
                 "AWB_DAEMON": st.base_url,
