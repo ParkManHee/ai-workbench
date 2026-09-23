@@ -61,6 +61,7 @@ async fn stream_loop(
         }
     };
     let mut pending = String::new();
+    let mut session_id: Option<String> = None;
     // keepalive: 폰 절전/NAT가 유휴 연결을 끊지 않도록 주기적으로 ping 프레임 전송
     // (OkHttp/브라우저가 pong을 자동 응답하므로 클라이언트 코드는 무관여).
     const PING_EVERY_SECS: u64 = 20;
@@ -75,7 +76,8 @@ async fn stream_loop(
             pending = pending[consumed..].to_string();
             for line in lines {
                 if let Some(sid) = crate::sessions::parse_session_id(&line) {
-                    st.sessions.set(&meta.project, &sid);
+                    st.sessions.record(&meta.project, &sid, meta.fork_of.as_deref());
+                    session_id = Some(sid);
                 }
                 if let Some(ev) = crate::streamevt::parse_line(&line) {
                     if socket
@@ -94,6 +96,7 @@ async fn stream_loop(
                 exit: status.exit_code,
                 verdict: status.verdict.clone(),
                 changed_files: status.changed_files,
+                session_id: session_id.clone(),
             };
             // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
             // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.

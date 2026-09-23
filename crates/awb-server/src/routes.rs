@@ -95,8 +95,11 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
     StatusCode::OK
 }
 
+/// `claude --effort` 허용값(claude --help 기준)
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -106,26 +109,34 @@ pub struct ChatResult {
     pub position: Option<usize>,
 }
 
+pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>) -> (Option<String>, Option<String>) {
+    crate::sessions::decide_resume(want, st.sessions.get(project), st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
+}
+
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
-    let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
+    // claude CLI가 받는 값만 통과 — 틀린 값을 조용히 무시하지 않고 거부한다
+    if let Some(e) = b.effort.as_deref() {
+        if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
+    }
+    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone());
     let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref()) {
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref()) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(),
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(), effort: b.effort.clone(),
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }
         Err(e) => return Err((StatusCode::CONFLICT, e)),
     };
     let run_id = run_id_of(&h.log);
-    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
+    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false, fork_of });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
     Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None }))
 }
@@ -228,6 +239,9 @@ pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<
 #[derive(Serialize, PartialEq, Debug)]
 pub struct DevServer { pub port: u16, pub process: String, pub reachable: bool }
 
+/// macOS 시스템 리스너 — HTTP 로 응답해도 개발 서버가 아니다(ControlCenter=AirPlay 수신 5000/7000).
+const SYSTEM_PROCS: &[&str] = &["ControlCe", "rapportd"];
+
 /// lsof LISTEN 출력 파싱(순수) — 폰에서 열 수 있는 개발 서버 후보.
 /// reachable: 0.0.0.0/'*' 바인딩(=Tailscale로 접근 가능). 127.0.0.1은 --host 필요 안내용으로 포함.
 pub fn parse_dev_servers(lsof_out: &str, exclude_ports: &[u16]) -> Vec<DevServer> {
@@ -242,6 +256,7 @@ pub fn parse_dev_servers(lsof_out: &str, exclude_ports: &[u16]) -> Vec<DevServer
         let (addr, port_s) = addr_port.split_at(idx);
         let Ok(port) = port_s[1..].parse::<u16>() else { continue };
         if exclude_ports.contains(&port) || !(1024..=49151).contains(&port) { continue; }
+        if SYSTEM_PROCS.contains(&cols[0]) { continue; }
         let reachable = addr == "*" || addr == "0.0.0.0" || addr == "[::]";
         // IPv4/IPv6 로컬호스트는 안내용으로만
         if !reachable && !(addr.starts_with("127.") || addr == "[::1]") { continue; }
@@ -257,7 +272,29 @@ pub async fn devservers_handler(State(st): State<AppState>) -> Json<Vec<DevServe
     let port: u16 = st.base_url.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(8787);
     let out = std::process::Command::new("lsof").args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"]).output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    Json(parse_dev_servers(&out, &[port, 5037]))
+    let cands = parse_dev_servers(&out, &[port, 5037]);
+    let probed = tokio::task::spawn_blocking(move || {
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = cands.into_iter().map(|d| sc.spawn(move || speaks_http(d.port).then_some(d))).collect();
+            hs.into_iter().filter_map(|h| h.join().ok().flatten()).collect::<Vec<_>>()
+        })
+    }).await.unwrap_or_default();
+    Json(probed)
+}
+
+/// HTTP 로 응답하는 포트만 남긴다 — DB·메시지큐(docker MySQL 3306·RabbitMQ 5672)가 개발 서버로 올라와
+/// 폰에서 열면 빈 화면이 됐다(2026-09-23 실측). 400ms 는 로컬 루프백 응답에 충분한 상한.
+fn speaks_http(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let t = std::time::Duration::from_millis(400);
+    for ip in [std::net::IpAddr::from([127, 0, 0, 1]), std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST)] {
+        let Ok(mut s) = std::net::TcpStream::connect_timeout(&(ip, port).into(), t) else { continue };
+        let _ = s.set_read_timeout(Some(t));
+        let _ = s.set_write_timeout(Some(t));
+        let mut buf = [0u8; 5];
+        return s.write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n").is_ok() && s.read_exact(&mut buf).is_ok() && &buf == b"HTTP/";
+    }
+    false
 }
 
 #[derive(Serialize)]
@@ -319,7 +356,9 @@ pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path))))
+    // 종료된 터미널 세션은 숨긴다 — 열린 터미널 세션과 앱이 이어 쓰는 대화만
+    let list = awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path));
+    Ok(Json(list.into_iter().filter(|s| s.live || s.app).collect()))
 }
 
 #[derive(serde::Deserialize)]
@@ -453,12 +492,30 @@ mod tests {
             "vite      12345   mh   30u  IPv4 0x5678      0t0  TCP 127.0.0.1:5173 (LISTEN)\n",
             "awb-serve  7735   mh   10u  IPv4 0x9abc      0t0  TCP 100.119.50.46:8787 (LISTEN)\n",
             "rapportd    600   mh    4u  IPv4 0xdef0      0t0  TCP *:49500 (LISTEN)\n",
+            "ControlCe   700   mh    9u  IPv4 0xdef1      0t0  TCP *:5000 (LISTEN)\n",
             "adb        1111   mh    8u  IPv4 0x1111      0t0  TCP 127.0.0.1:5037 (LISTEN)\n",
         );
         let v = crate::routes::parse_dev_servers(sample, &[8787, 5037]);
-        assert_eq!(v.len(), 2, "{v:?}"); // 8081(reachable) + 5173(localhost 안내) — 8787/5037/49500(범위밖) 제외
+        assert_eq!(v.len(), 2, "{v:?}"); // 8081(reachable) + 5173(localhost 안내) — 8787/5037/49500(범위밖)/5000(시스템) 제외
         assert_eq!(v[0], crate::routes::DevServer { port: 5173, process: "vite".into(), reachable: false });
         assert_eq!(v[1], crate::routes::DevServer { port: 8081, process: "node".into(), reachable: true });
+    }
+
+    #[test]
+    fn speaks_http_rejects_non_http_listeners() {
+        use std::io::{Read, Write};
+        // 한 번 받아 응답하는 리스너: HTTP 서버 흉내 / MySQL 처럼 접속 즉시 인사말을 보내는 서버 흉내
+        fn serve(reply: &'static [u8]) -> u16 {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || if let Ok((mut c, _)) = l.accept() {
+                let mut b = [0u8; 64]; let _ = c.set_read_timeout(Some(std::time::Duration::from_millis(100))); let _ = c.read(&mut b);
+                let _ = c.write_all(reply);
+            });
+            port
+        }
+        assert!(super::speaks_http(serve(b"HTTP/1.1 200 OK\r\n\r\n")));
+        assert!(!super::speaks_http(serve(b"J\x00\x00\x00\x0a8.0.33\x00")));
     }
 
     #[tokio::test]

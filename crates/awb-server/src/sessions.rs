@@ -27,8 +27,29 @@ impl SessionStore {
         let v: Value = serde_json::from_str(&s).ok()?;
         v.get("session_id")?.as_str().map(|x| x.to_string())
     }
-    pub fn set(&self, project: &str, sid: &str) {
-        let _ = fs::write(self.path(project), format!("{{\"session_id\":{}}}", serde_json::to_string(sid).unwrap()));
+    /// 이 세션이 터미널 세션을 갈라 만든 것이면 그 원본 ID.
+    pub fn forked_from(&self, project: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(&fs::read_to_string(self.path(project)).ok()?).ok()?;
+        v.get("forked_from")?.as_str().map(|x| x.to_string())
+    }
+    /// 실행이 잡은 session_id 저장. fork 실행이면 원본을 남기고, 같은 세션을 잇는 동안은 원본을 유지한다.
+    pub fn record(&self, project: &str, sid: &str, fork_of: Option<&str>) {
+        let origin = fork_of.map(|x| x.to_string())
+            .or_else(|| if self.get(project).as_deref() == Some(sid) { self.forked_from(project) } else { None });
+        let v = serde_json::json!({ "session_id": sid, "forked_from": origin });
+        let _ = fs::write(self.path(project), v.to_string());
+    }
+}
+
+/// 이어갈 세션과 fork 원본. 터미널에 열린 세션을 그대로 --resume 하면 두 프로세스가 한 대화 파일에 번갈아 써서
+/// 서로의 턴을 모른다(2026-09-23 실측) — 그때는 갈라(--fork-session) 새 ID 로 쓴다.
+/// 이미 갈라 둔 원본이 다시 오면(앱의 옛 파라미터·큐 적재분) 갈라 둔 쪽을 잇는다.
+pub fn decide_resume(want: Option<String>, stored: Option<String>, forked_from: Option<String>, live: &std::collections::HashSet<String>) -> (Option<String>, Option<String>) {
+    let want = want.or_else(|| stored.clone());
+    match want {
+        Some(w) if forked_from.as_deref() == Some(w.as_str()) && stored.is_some() => (stored, None),
+        Some(w) if live.contains(&w) => (Some(w.clone()), Some(w)),
+        other => (other, None),
     }
 }
 
@@ -69,7 +90,21 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let s = SessionStore::load(d.to_str().unwrap());
         assert_eq!(s.get("proj"), None);
-        s.set("proj", "sid-9");
+        s.record("proj", "sid-9", None);
         assert_eq!(s.get("proj"), Some("sid-9".to_string()));
+    }
+
+    #[test]
+    fn decide_resume_forks_live_terminal_and_reuses_fork() {
+        let live: std::collections::HashSet<String> = ["term".to_string()].into();
+        let s = |x: &str| Some(x.to_string());
+        // 터미널에 열린 세션 → 갈라서 실행
+        assert_eq!(decide_resume(s("term"), None, None, &live), (s("term"), s("term")));
+        // 저장된 세션이 터미널 세션이어도 갈라서 실행
+        assert_eq!(decide_resume(None, s("term"), None, &live), (s("term"), s("term")));
+        // 이미 갈라 둔 원본이 다시 오면 갈라 둔 쪽을 잇는다(재fork 금지)
+        assert_eq!(decide_resume(s("term"), s("fork1"), s("term"), &live), (s("fork1"), None));
+        // 닫힌 세션은 그대로 resume
+        assert_eq!(decide_resume(s("old"), None, None, &live), (s("old"), None));
     }
 }

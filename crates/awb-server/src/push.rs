@@ -119,7 +119,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                 // WS가 붙어있지 않은 push-only 완료 경로에서도 --resume용 session_id를 캡처한다.
                 // (WS 루프는 라인 단위로 파싱하지만, 여기선 WS가 없었을 수 있으므로 로그 전체를 읽어 찾는다.)
                 if let Some(sid) = crate::sessions::capture_session_id_from_log(&meta.log) {
-                    st.sessions.set(&meta.project, &sid);
+                    st.sessions.record(&meta.project, &sid, meta.fork_of.as_deref());
                 }
                 if should_push(&st.runs, &run_id) {
                     let tokens = st.push.list();
@@ -158,7 +158,7 @@ mod tests {
         let r = RunRegistry::new();
         r.insert(
             "x",
-            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false },
+            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None },
         );
         // WS가 먼저 전달한 경우
         assert!(r.mark_notified("x")); // WS가 소비
@@ -167,7 +167,7 @@ mod tests {
         // WS가 없던 경우
         r.insert(
             "y",
-            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false },
+            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
     }

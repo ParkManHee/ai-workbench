@@ -9,7 +9,8 @@ const SUMMARY_MAX_CHARS: usize = 200;
 pub enum Event {
     Token { text: String },
     ToolUse { name: String, summary: String },
-    Done { exit: Option<i32>, verdict: String, changed_files: u32 },
+    /// session_id: 이 실행이 쓴 세션(fork 되면 새 ID) — 앱이 이후 전송·트랜스크립트를 이 ID 로 바꾼다
+    Done { exit: Option<i32>, verdict: String, changed_files: u32, session_id: Option<String> },
     Error { message: String },
 }
 

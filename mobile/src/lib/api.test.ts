@@ -13,7 +13,7 @@ describe("url builders", () => {
     const r = await c.chat("demo", "hi", true);
     expect(r.run_id).toBe("r1");
     expect(calls[0][0]).toBe("http://1.2.3.4:8787/chat/demo");
-    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true });
+    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true, approval: false });
     expect(calls[0][1].headers.Authorization).toBe("Bearer tok");
   });
 });
@@ -47,14 +47,14 @@ describe("multi-PC endpoints", () => {
     const fetchMock = async (url: string, init: any) => { calls.push([url, init]); return { ok: true, json: async () => ({ run_id: "r1", log: "l" }) }; };
     const c = makeClient("http://1.2.3.4:8787", "tok", fetchMock as any);
     await c.chat("demo", "hi", true, "sess-abc");
-    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true, resume_session_id: "sess-abc" });
+    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true, approval: false, resume_session_id: "sess-abc" });
   });
   it("client.chat without resumeSessionId omits resume_session_id from body", async () => {
     const calls: any[] = [];
     const fetchMock = async (url: string, init: any) => { calls.push([url, init]); return { ok: true, json: async () => ({ run_id: "r1", log: "l" }) }; };
     const c = makeClient("http://1.2.3.4:8787", "tok", fetchMock as any);
     await c.chat("demo", "hi", true);
-    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true });
+    expect(JSON.parse(calls[0][1].body)).toEqual({ prompt: "hi", plan: true, approval: false });
   });
 });
 describe("401 handling", () => {
