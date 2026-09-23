@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Image,
   Pressable,
   ScrollView,
@@ -16,6 +15,7 @@ import * as ImagePicker from "expo-image-picker";
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams, Stack } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
@@ -23,6 +23,7 @@ import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/l
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
+import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -113,6 +114,7 @@ export default function Chat() {
   // 모델 오버라이드("" = 기본): 긴 작업 전 상위/하위 모델 전환
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
@@ -236,21 +238,19 @@ export default function Chat() {
   useSpeechRecognitionEvent("error", () => setListening(false));
 
   function pickModel() {
-    Alert.alert("모델", `현재: ${model || "기본"}`, [
-      { text: "기본(설정 따름)", onPress: () => setModel("") },
-      { text: "Opus", onPress: () => setModel("opus") },
-      { text: "Sonnet", onPress: () => setModel("sonnet") },
-      { text: "Haiku", onPress: () => setModel("haiku") },
-      { text: "취소", style: "cancel" },
-    ]);
+    setSheet({ title: "모델", message: `현재: ${model || "기본"}`, choices: [
+      { label: "기본(설정 따름)", onPress: () => setModel("") },
+      { label: "Opus", onPress: () => setModel("opus") },
+      { label: "Sonnet", onPress: () => setModel("sonnet") },
+      { label: "Haiku", onPress: () => setModel("haiku") },
+    ] });
   }
 
   function pickEffort() {
-    Alert.alert("Effort", `현재: ${effort || "기본"}`, [
-      { text: "기본(설정 따름)", onPress: () => setEffort("") },
-      ...["low", "medium", "high", "xhigh", "max"].map((e) => ({ text: e, onPress: () => setEffort(e) })),
-      { text: "취소", style: "cancel" as const },
-    ]);
+    setSheet({ title: "Effort", message: `현재: ${effort || "기본"}`, choices: [
+      { label: "기본(설정 따름)", onPress: () => setEffort("") },
+      ...["low", "medium", "high", "xhigh", "max"].map((e) => ({ label: e, onPress: () => setEffort(e) })),
+    ] });
   }
 
   async function toggleMic() {
@@ -283,13 +283,11 @@ export default function Chat() {
           : "리슨 중인 dev 서버가 없습니다.");
         return;
       }
-      Alert.alert("dev 서버 프리뷰", "열 서버를 선택하세요", [
-        ...reachable.slice(0, 3).map((s) => ({
-          text: `${s.process} :${s.port}`,
-          onPress: () => Linking.openURL(`http://${host}:${s.port}`),
-        })),
-        { text: "취소", style: "cancel" as const },
-      ]);
+      setSheet({ title: "dev 서버 프리뷰", message: "열 서버를 선택하세요", choices: reachable.map((s) => ({
+          label: `${s.process} :${s.port}`,
+          // 외부 브라우저 대신 Custom Tab — 상단 X 로 닫고 앱으로 돌아온다(createTask:false 로 앱 태스크 안에 띄움)
+          onPress: () => WebBrowser.openBrowserAsync(`http://${host}:${s.port}`, { showTitle: true, createTask: false }),
+        })) });
     } catch {
       Alert.alert("프리뷰", "dev 서버 조회 실패");
     }
@@ -930,6 +928,7 @@ export default function Chat() {
           </View>
         </View>
       </KeyboardStickyView>
+      <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
     </View>
   );
 }
