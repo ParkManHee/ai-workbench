@@ -53,9 +53,10 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean, model?: string) => {
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean, model?: string, effort?: string) => {
       const body: Record<string, unknown> = { prompt, plan, approval: !!approval };
       if (model) body.model = model;
+      if (effort) body.effort = effort;
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
       const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);

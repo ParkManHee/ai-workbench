@@ -84,6 +84,9 @@ export default function Chat() {
     path: string;
     session?: string;
   }>();
+  // 실제로 이어 쓰는 세션 — 터미널에 열린 세션을 고르면 서버가 갈라(fork) 새 ID 로 쓰고 done 으로 알려준다
+  const sidRef = useRef<string | undefined>(session);
+  const [sid, setSid] = useState<string | undefined>(session);
   const insets = useSafeAreaInsets();
   // 키보드가 열리면 입력바가 키보드 위로 올라가므로, 하단 내비바 안전영역 패딩을
   // 빼서 입력바와 키보드 사이 흰 공백을 없앤다(닫혀 있을 때만 안전영역 적용).
@@ -109,6 +112,7 @@ export default function Chat() {
   const dictationBaseRef = useRef("");
   // 모델 오버라이드("" = 기본): 긴 작업 전 상위/하위 모델 전환
   const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
@@ -241,6 +245,14 @@ export default function Chat() {
     ]);
   }
 
+  function pickEffort() {
+    Alert.alert("Effort", `현재: ${effort || "기본"}`, [
+      { text: "기본(설정 따름)", onPress: () => setEffort("") },
+      ...["low", "medium", "high", "xhigh", "max"].map((e) => ({ text: e, onPress: () => setEffort(e) })),
+      { text: "취소", style: "cancel" as const },
+    ]);
+  }
+
   async function toggleMic() {
     if (listening) {
       ExpoSpeechRecognitionModule.stop();
@@ -295,13 +307,13 @@ export default function Chat() {
   // any new transcript lines. Skips a tick while a local run is in flight.
   const pollBusyRef = useRef(false);
   function startPoll(p: PC) {
-    if (pollRef.current || !session) return;
+    if (pollRef.current || !sidRef.current) return;
     pollRef.current = setInterval(async () => {
       if (!doneRef.current) return; // local run in flight; let its WS drive the UI
       if (pollBusyRef.current) return; // 이전 틱이 아직 진행 중(대용량/느린 네트워크) — 겹치면 같은 offset을 두 번 읽어 메시지가 중복된다
       pollBusyRef.current = true;
       try {
-        const res = await makeClient(p.baseUrl, p.token).transcript(project, session, nextLineRef.current);
+        const res = await makeClient(p.baseUrl, p.token).transcript(project, sidRef.current!, nextLineRef.current);
         nextLineRef.current = res.next; // 항상 전진(필터로 메시지가 비어도 재파싱 중복 방지)
         if (res.messages.length > 0) {
           setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
@@ -341,11 +353,11 @@ export default function Chat() {
   const [showJumpDown, setShowJumpDown] = useState(false);
 
   async function loadOlder() {
-    if (!pc || !session || loadingOlderRef.current || prevRef.current == null) return;
+    if (!pc || !sidRef.current || loadingOlderRef.current || prevRef.current == null) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const res = await makeClient(pc.baseUrl, pc.token).transcriptBefore(project, session, prevRef.current);
+      const res = await makeClient(pc.baseUrl, pc.token).transcriptBefore(project, sidRef.current, prevRef.current);
       prevRef.current = res.prev;
       if (res.messages.length > 0) {
         suppressAutoScrollRef.current = true; // prepend 시 맨아래 자동 스크롤 금지
@@ -398,9 +410,9 @@ export default function Chat() {
   // 하나도 안 올라오는 "얼어붙은 방"이 된다(이번 버그). 서버 진실로 교체하므로
   // WS로 이미 그린 내용과 중복되지 않는다.
   async function reloadTailAndPoll(p: PC) {
-    if (!session) return;
+    if (!sidRef.current) return;
     try {
-      const res = await makeClient(p.baseUrl, p.token).transcriptTail(project, session);
+      const res = await makeClient(p.baseUrl, p.token).transcriptTail(project, sidRef.current);
       nextLineRef.current = res.next;
       prevRef.current = res.prev;
       setChat((prev) => ({ ...prev, messages: res.messages.map(toChatMsg) }));
@@ -426,6 +438,10 @@ export default function Chat() {
       setChat((prev) => reduceEvent(prev, ev));
       if (ev.kind === "done") {
         doneRef.current = true;
+        if (ev.session_id) {
+          sidRef.current = ev.session_id;
+          setSid(ev.session_id);
+        }
         fetchDiff(p);
         ws.close();
         reloadTailAndPoll(p);
@@ -559,7 +575,7 @@ export default function Chat() {
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, session, approval, model || undefined);
+      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, approval, model || undefined, effort || undefined);
       setPrompt("");
       setImages([]);
       if (res.queued) {
@@ -615,11 +631,11 @@ export default function Chat() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
-      {session && path ? (
+      {sid && path ? (
         <View style={styles.resumeBar}>
           <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
           <Text style={styles.resumeCmd} selectable>
-            {`cd ${path} && claude --resume ${session}`}
+            {`cd ${path} && claude --resume ${sid}`}
           </Text>
         </View>
       ) : null}
@@ -851,6 +867,8 @@ export default function Chat() {
           </View>
         ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
+          {/* 컨트롤과 입력칸을 두 줄로 — 한 줄이면 컨트롤이 늘 때 입력칸 폭이 0 이 되고 전송 버튼이 화면 밖으로 밀린다 */}
+          <View style={styles.controlRow}>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch
@@ -862,6 +880,11 @@ export default function Chat() {
           <Pressable onPress={pickModel}>
             <Text style={[styles.planLabel, model ? { color: t.accent, fontWeight: "700" } : null]}>
               {model || "모델"}
+            </Text>
+          </Pressable>
+          <Pressable onPress={pickEffort}>
+            <Text style={[styles.planLabel, effort ? { color: t.accent, fontWeight: "700" } : null]}>
+              {effort || "effort"}
             </Text>
           </Pressable>
           <Text style={styles.planLabel}>승인</Text>
@@ -881,6 +904,8 @@ export default function Chat() {
         <Pressable style={styles.attachButton} onPress={toggleMic}>
           <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
+          </View>
+          <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
           multiline
@@ -902,6 +927,7 @@ export default function Chat() {
             <Text style={styles.buttonText}>취소</Text>
           </Pressable>
         ) : null}
+          </View>
         </View>
       </KeyboardStickyView>
     </View>
@@ -1135,12 +1161,21 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     marginVertical: 2,
   },
   inputBar: {
-    flexDirection: "row",
-    alignItems: "flex-end",
     padding: 8,
-    gap: 8,
+    gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: t.border,
+  },
+  controlRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
   },
   attachRow: {
     flexDirection: "row",

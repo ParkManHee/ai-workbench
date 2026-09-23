@@ -28,6 +28,10 @@ pub struct SessionInfo {
     pub count: u32,
     pub active: bool,
     pub waiting: bool,
+    /// 터미널(대화형 claude)에서 지금 열려 있음
+    pub live: bool,
+    /// 마지막 기록이 `claude -p`(entrypoint=sdk-cli) — 앱·데몬이 이어 쓰는 대화
+    pub app: bool,
 }
 #[derive(Serialize, Clone)]
 pub struct TranscriptMsg {
@@ -299,10 +303,19 @@ pub fn snippet(text: &str) -> String {
     if t.chars().count() > 60 { format!("{s}…") } else { s }
 }
 
+/// 트랜스크립트 마지막 기록의 entrypoint("cli"=터미널, "sdk-cli"=claude -p).
+fn last_entrypoint(path: &str) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    content.lines().rev().filter(|l| l.contains("\"entrypoint\"")).find_map(|l| {
+        serde_json::from_str::<Value>(l).ok()?.get("entrypoint")?.as_str().map(|s| s.to_string())
+    })
+}
+
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
     let dir = format!("{}/{}", projects_root(), slug);
     let mut out = vec![];
     let entries = match fs::read_dir(&dir) { Ok(e) => e, Err(_) => return out };
+    let live_ids = crate::live::live_interactive_ids();
     for e in entries.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("jsonl") { continue; }
@@ -318,7 +331,9 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
             .map(|m| snippet(&m.text)).unwrap_or_default();
         let age = now().saturating_sub(updated);
         let waiting = !active && status_from(age, msgs.last().map(|m| m.role.as_str())) == Some("waiting");
-        out.push(SessionInfo { session_id: sid, updated, preview, answer_preview, count: msgs.len() as u32, active, waiting });
+        let live = live_ids.contains(&sid);
+        let app = last_entrypoint(p.to_str().unwrap_or("")).as_deref() == Some("sdk-cli");
+        out.push(SessionInfo { session_id: sid, updated, preview, answer_preview, count: msgs.len() as u32, active, waiting, live, app });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
     out

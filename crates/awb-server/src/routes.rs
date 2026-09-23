@@ -95,8 +95,11 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
     StatusCode::OK
 }
 
+/// `claude --effort` 허용값(claude --help 기준)
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -106,26 +109,34 @@ pub struct ChatResult {
     pub position: Option<usize>,
 }
 
+pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>) -> (Option<String>, Option<String>) {
+    crate::sessions::decide_resume(want, st.sessions.get(project), st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
+}
+
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
     // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
-    let resume = b.resume_session_id.clone().or_else(|| st.sessions.get(&project));
+    // claude CLI가 받는 값만 통과 — 틀린 값을 조용히 무시하지 않고 거부한다
+    if let Some(e) = b.effort.as_deref() {
+        if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
+    }
+    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone());
     let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref()) {
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref()) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(),
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(), effort: b.effort.clone(),
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }
         Err(e) => return Err((StatusCode::CONFLICT, e)),
     };
     let run_id = run_id_of(&h.log);
-    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false });
+    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false, fork_of });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
     Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None }))
 }
@@ -319,7 +330,9 @@ pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path))))
+    // 종료된 터미널 세션은 숨긴다 — 열린 터미널 세션과 앱이 이어 쓰는 대화만
+    let list = awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path));
+    Ok(Json(list.into_iter().filter(|s| s.live || s.app).collect()))
 }
 
 #[derive(serde::Deserialize)]

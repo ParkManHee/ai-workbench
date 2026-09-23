@@ -154,6 +154,7 @@ export default function Sessions() {
                 </Text>
                 {item.active ? <Text style={styles.activeBadge}>🟢</Text> : item.waiting ? <Text style={styles.activeBadge}>🔴</Text> : null}
               </View>
+              {item.live ? <Text style={styles.updated}>🖥 PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다</Text> : null}
               {item.answer_preview ? (
                 <Text style={styles.answerPreview} numberOfLines={1}>↳ {item.answer_preview}</Text>
               ) : null}
