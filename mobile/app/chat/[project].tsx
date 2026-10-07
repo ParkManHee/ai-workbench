@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -28,6 +29,7 @@ import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
+import { TextSelectModal } from "../../src/components/TextSelectModal";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -119,6 +121,7 @@ export default function Chat() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
+  const [selectText, setSelectText] = useState<string | null>(null);
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
@@ -238,6 +241,16 @@ export default function Chat() {
     } catch {
       // best-effort
     }
+  }
+
+  function bubbleActions(role: ChatMsg["role"], text: string) {
+    setSheet({ title: role === "user" ? "내 메시지" : "답변", choices: [
+      { label: "전체 복사하기", onPress: () => copyText(text) },
+      // 시트가 닫히는 렌더가 먼저 커밋된 뒤 열어 Modal 두 개가 겹치지 않게 한다
+      { label: "부분만 복사하기", onPress: () => setTimeout(() => setSelectText(text), 0) },
+      { label: "입력창에 넣기", onPress: () => setPrompt(text) },
+      { label: "공유하기", onPress: () => { Share.share({ message: text }).catch(() => {}); } },
+    ] });
   }
 
   async function answerPermission(id: string, allow: boolean) {
@@ -762,7 +775,7 @@ export default function Chat() {
             <Pressable
               key={i}
               style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
-              onLongPress={hasText ? () => copyText(m.text) : undefined}
+              onLongPress={hasText ? () => bubbleActions(m.role, m.text) : undefined}
             >
               {hasTools ? (
                 <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
@@ -978,6 +991,7 @@ export default function Chat() {
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
+      <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );
 }
