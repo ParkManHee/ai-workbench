@@ -63,6 +63,12 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
+    endSession: async (project: string, sessionId: string): Promise<{ ended: boolean; pid: number }> => {
+      const p = `/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/end`;
+      const r = await f(`${baseUrl}${p}`, { method: "POST", headers: h } as any);
+      if (!(r as any).ok) throw new HttpError((r as any).status, p);
+      return (r as any).json();
+    },
     /** 첨부 이미지 업로드(base64 → raw bytes) → Mac 저장 절대경로를 반환받는다.
      * expo 전역 fetch(WinterCG)는 RN식 {uri,...} FormData 파트를 지원하지 않고
      * ("unsupported FormData part implementation"), 로컬 uri의 blob() 읽기도 안 되므로

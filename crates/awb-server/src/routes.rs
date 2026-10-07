@@ -383,6 +383,20 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
     Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active })))
 }
 
+/// PC 터미널에서 열린 대화형 세션을 앱에서 끝낸다. 레지스트리·시작시각·cwd 가 모두 맞는 pid 에만 신호를 보낸다.
+pub async fn session_end_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    let ended = tokio::task::spawn_blocking(move || {
+        let e = awb_core::live::find_live(&session_id)?;
+        // 다른 프로젝트의 세션을 이 경로로 끄지 못하게
+        if !e.cwd.as_deref().is_some_and(|c| awb_core::live::same_dir(c, &proj.path)) { return None; }
+        awb_core::live::terminate(e.pid, &e.proc_start, awb_core::live::proc_lstart).map(|ended| (ended, e.pid))
+    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (ended, pid) = ended.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "ended": ended, "pid": pid })))
+}
+
 #[derive(serde::Deserialize)]
 pub struct UploadQuery { pub ext: String }
 
@@ -439,6 +453,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))
         .route("/sessions/{project}", get(sessions_handler))
+        .route("/sessions/{project}/{session_id}/end", post(session_end_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
         // 이미지 업로드: 기본 body 한도(2MB)를 사진 크기에 맞게 상향

@@ -3,15 +3,18 @@ import {
   ActivityIndicator,
   Button,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
   Text,
+  ToastAndroid,
   View,
 } from "react-native";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { isUnauthorized, makeClient } from "../../src/lib/api";
+import { HttpError, isUnauthorized, makeClient } from "../../src/lib/api";
+import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
@@ -44,6 +47,8 @@ export default function Sessions() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
+  const [ending, setEnding] = useState<string | null>(null);
 
   const load = useCallback(
     async (p: PC, isRefresh: boolean) => {
@@ -113,6 +118,56 @@ export default function Sessions() {
     });
   }
 
+  async function endLive(item: SessionInfo) {
+    if (!pc) return;
+    setEnding(item.session_id);
+    try {
+      const r = await makeClient(pc.baseUrl, pc.token).endSession(project, item.session_id);
+      if (!r.ended && Platform.OS === "android") {
+        ToastAndroid.show("아직 종료되지 않았습니다. 잠시 후 다시 확인하세요", ToastAndroid.LONG);
+      }
+      await load(pc, true);
+    } catch (e) {
+      if (isUnauthorized(e)) {
+        await removePC(pc.id);
+        router.replace("/");
+        return;
+      }
+      if (Platform.OS === "android") {
+        ToastAndroid.show(
+          e instanceof HttpError && e.status === 404 ? "이미 종료된 세션입니다" : "세션을 끝내지 못했습니다. 다시 시도해 주세요",
+          ToastAndroid.LONG,
+        );
+      }
+      await load(pc, true);
+    } finally {
+      setEnding(null);
+    }
+  }
+
+  function handleLongPress(item: SessionInfo) {
+    if (!item.live) return;
+    setSheet({
+      title: item.preview || "(빈 대화)",
+      choices: [
+        {
+          label: "PC 터미널 세션 끝내기",
+          // ChoiceSheet 가 선택 직후 자기를 닫으므로 다음 틱에 확인 시트를 연다.
+          onPress: () =>
+            setTimeout(
+              () =>
+                setSheet({
+                  title: "정말 끝낼까요?",
+                  message: "Mac 터미널에서 실행 중인 claude 가 종료됩니다. 터미널 창은 남습니다.",
+                  choices: [{ label: "끝내기", onPress: () => endLive(item) }],
+                }),
+              0,
+            ),
+        },
+      ],
+    });
+  }
+
   // PC not resolved yet, or not found (redirect in flight): render nothing.
   if (!pc) {
     return <View style={styles.container} />;
@@ -147,11 +202,12 @@ export default function Sessions() {
             </View>
           }
           renderItem={({ item }) => (
-            <Pressable style={styles.row} onPress={() => handlePress(item)}>
+            <Pressable style={styles.row} onPress={() => handlePress(item)} onLongPress={() => handleLongPress(item)}>
               <View style={styles.rowTop}>
                 <Text style={styles.preview} numberOfLines={1}>
                   {item.preview || "(빈 대화)"}
                 </Text>
+                {ending === item.session_id ? <ActivityIndicator size="small" /> : null}
                 {item.active ? <Text style={styles.activeBadge}>🟢</Text> : item.waiting ? <Text style={styles.activeBadge}>🔴</Text> : null}
               </View>
               {item.live ? <Text style={styles.updated}>🖥 PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다</Text> : null}
@@ -161,8 +217,10 @@ export default function Sessions() {
               <Text style={styles.updated}>{formatUpdated(item.updated)}</Text>
             </Pressable>
           )}
+          extraData={ending}
         />
       )}
+      <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
     </View>
   );
 }
