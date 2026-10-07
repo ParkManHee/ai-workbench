@@ -3,14 +3,17 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
@@ -19,6 +22,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
+import { rewriteBangCommand } from "../../src/lib/bang";
 import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
@@ -118,6 +122,13 @@ export default function Chat() {
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
+  // 변경 파일 목록은 기본 접힘 — 펼쳐 두면 파일이 많을 때 답변을 화면 위로 밀어낸다
+  const [diffOpen, setDiffOpen] = useState(false);
+  // 응답 대기 중 재탭 차단 — state 는 다음 렌더까지 반영되지 않아 ref 로 즉시 막는다
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  // 프리셋 칩은 입력칸 포커스 중에만 — 상시 노출하면 대화창을 가린다
+  const [inputFocused, setInputFocused] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
   const [images, setImages] = useState<{ uri: string; ext: string; base64: string }[]>([]);
@@ -219,6 +230,15 @@ export default function Chat() {
     }, 2500);
     return () => clearInterval(iv);
   }, [pc, project]);
+
+  async function copyText(text: string) {
+    try {
+      await Clipboard.setStringAsync(text);
+      if (Platform.OS === "android") ToastAndroid.show("복사됨", ToastAndroid.SHORT);
+    } catch {
+      // best-effort
+    }
+  }
 
   async function answerPermission(id: string, allow: boolean) {
     if (!pc) return;
@@ -533,6 +553,7 @@ export default function Chat() {
 
   async function handleSend(overrideText?: string, overridePlan?: boolean) {
     if (!pc || !client || !project) return;
+    if (sendingRef.current) return;
     const planFlag = overridePlan ?? plan;
     const text = (overrideText ?? prompt).trim();
     if ((!text && images.length === 0) || uploading) return; // 실행 중에도 전송 허용(서버가 큐잉)
@@ -543,12 +564,24 @@ export default function Chat() {
       setSendError("이미지 정보가 유효하지 않습니다. 첨부를 ✕로 지우고 다시 선택해주세요.");
       return;
     }
+    sendingRef.current = true;
+    setSending(true);
+    // 탭 즉시 입력을 비워 반응을 보이고, 실패하면 복원한다(그 사이 새로 친 입력은 덮지 않음)
+    const sentPrompt = prompt;
+    const sentImages = images;
+    const restoreInput = () => {
+      setPrompt((cur) => (cur ? cur : sentPrompt));
+      setImages((cur) => (cur.length ? cur : sentImages));
+    };
+    setPrompt("");
+    setImages([]);
+    try {
     // 이미지 먼저 업로드 — 실패하면 입력을 유지한 채 전송 중단(부분 업로드로 실행하지 않음)
     const paths: string[] = [];
-    if (images.length > 0) {
+    if (sentImages.length > 0) {
       setUploading(true);
       try {
-        for (const im of images) paths.push((await client.upload(im.base64, im.ext)).path);
+        for (const im of sentImages) paths.push((await client.upload(im.base64, im.ext)).path);
       } catch (e) {
         if (isUnauthorized(e)) {
           await removePC(pc.id);
@@ -556,6 +589,7 @@ export default function Chat() {
           return;
         }
         console.log("[awb] upload failed:", e); // adb logcat(ReactNativeJS)에서 원인 확인용
+        restoreInput();
         setSendError(`이미지 업로드 실패: ${e instanceof Error ? e.message : String(e)}`);
         return;
       } finally {
@@ -563,10 +597,12 @@ export default function Chat() {
       }
     }
 
+    // 말풍선엔 사용자가 친 `!cmd` 원문, 서버엔 실행 지시로 변환한 프롬프트
+    const sendText = rewriteBangCommand(text);
     // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
     const fullPrompt = paths.length
-      ? `${text}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
-      : text;
+      ? `${sendText}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
+      : sendText;
     const shown = paths.length ? `${text}${text ? "\n" : ""}🖼 이미지 ${paths.length}장` : text;
     const userMsg: ChatMsg = { role: "user", text: shown };
 
@@ -574,8 +610,6 @@ export default function Chat() {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
       const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, approval, model || undefined, effort || undefined);
-      setPrompt("");
-      setImages([]);
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({
@@ -590,6 +624,7 @@ export default function Chat() {
       }
       stopPoll(); // the user's own run now drives the live view
       setDiff(null);
+      setDiffOpen(false);
       reconnectsRef.current = 0;
       setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
       runIdRef.current = res.run_id!;
@@ -601,7 +636,12 @@ export default function Chat() {
         router.replace("/");
         return;
       }
+      restoreInput();
       setSendError("전송 실패. 다시 시도해주세요.");
+    }
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   }
 
@@ -719,7 +759,11 @@ export default function Chat() {
             );
           }
           return (
-            <View key={i} style={m.role === "user" ? styles.userBubble : styles.assistantBubble}>
+            <Pressable
+              key={i}
+              style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
+              onLongPress={hasText ? () => copyText(m.text) : undefined}
+            >
               {hasTools ? (
                 <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
                   <Text style={styles.toolButtonText}>
@@ -741,7 +785,7 @@ export default function Chat() {
                   <Markdown style={mdStyles}>{m.text}</Markdown>
                 )
               ) : null}
-            </View>
+            </Pressable>
           );
         })}
 
@@ -756,10 +800,12 @@ export default function Chat() {
 
         {diff ? (
           <View style={styles.diffBox}>
-            <Text style={styles.diffTitle}>
-              git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions}
-            </Text>
-            {diff.entries.map((e, i) => (
+            <Pressable onPress={() => setDiffOpen((v) => !v)}>
+              <Text style={styles.diffTitle}>
+                git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
+              </Text>
+            </Pressable>
+            {diffOpen ? diff.entries.map((e, i) => (
               <View key={i}>
                 <Pressable onPress={() => toggleFileDiff(e.path)}>
                   <Text style={styles.diffEntry}>
@@ -772,7 +818,7 @@ export default function Chat() {
                   </Text>
                 ) : null}
               </View>
-            ))}
+            )) : null}
           </View>
         ) : null}
       </ScrollView>
@@ -837,7 +883,7 @@ export default function Chat() {
           );
         })()}
         {/* 프리셋: 입력이 비어 있을 때만 — 탭하면 입력창에 채워져 수정 후 전송 */}
-        {!prompt && !chat.running && images.length === 0 ? (
+        {inputFocused && !prompt && !chat.running && images.length === 0 ? (
           <View style={styles.optionRow}>
             {PROMPT_PRESETS.map((p, i) => (
               <Pressable key={i} style={styles.presetChip} onPress={() => setPrompt(p)}>
@@ -902,6 +948,12 @@ export default function Chat() {
         <Pressable style={styles.attachButton} onPress={toggleMic}>
           <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
+        {/* 취소는 컨트롤 줄에 — 입력 줄에 끼우면 전송 버튼이 밀려 그 자리에 취소가 와 오터치된다 */}
+        {running ? (
+          <Pressable style={styles.cancelButton} onPress={handleCancel}>
+            <Text style={styles.cancelButtonText}>취소</Text>
+          </Pressable>
+        ) : null}
           </View>
           <View style={styles.inputRow}>
         <TextInput
@@ -909,22 +961,19 @@ export default function Chat() {
           multiline
           value={prompt}
           onChangeText={setPrompt}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
           editable={!uploading}
           placeholder="메시지를 입력하세요"
           placeholderTextColor={t.placeholder}
         />
         <Pressable
-          style={styles.sendButton}
+          style={[styles.sendButton, sending ? { opacity: 0.5 } : null]}
           onPress={() => handleSend()}
-          disabled={(!prompt.trim() && images.length === 0) || uploading}
+          disabled={(!prompt.trim() && images.length === 0) || uploading || sending}
         >
-          <Text style={styles.buttonText}>{uploading ? "업로드…" : running ? "큐잉" : "전송"}</Text>
+          <Text style={styles.buttonText}>{uploading ? "업로드…" : sending ? "전송중…" : running ? "큐잉" : "전송"}</Text>
         </Pressable>
-        {running ? (
-          <Pressable style={styles.cancelButton} onPress={handleCancel}>
-            <Text style={styles.buttonText}>취소</Text>
-          </Pressable>
-        ) : null}
           </View>
         </View>
       </KeyboardStickyView>
@@ -1248,8 +1297,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   cancelButton: {
     backgroundColor: "#c0392b",
     borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  cancelButtonText: {
+    color: "white",
+    fontWeight: "600",
+    fontSize: 12,
   },
   buttonText: {
     color: "white",
