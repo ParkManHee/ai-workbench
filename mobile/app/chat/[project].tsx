@@ -22,7 +22,7 @@ import { router, useLocalSearchParams, Stack } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
-import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
+import { changedFilesLabel, initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import { rewriteBangCommand } from "../../src/lib/bang";
 import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
@@ -896,7 +896,7 @@ export default function Chat() {
         {!chat.running && chat.verdict ? (
           <View style={styles.verdictRow}>
             <Text style={styles.verdictText}>{verdictLabel(chat.verdict)}</Text>
-            <Text style={styles.changedFiles}>변경 파일 {chat.changedFiles}개</Text>
+            <Text style={styles.changedFiles}>{changedFilesLabel(chat.changedFiles, diff)}</Text>
           </View>
         ) : null}
 
@@ -906,7 +906,7 @@ export default function Chat() {
           <View style={styles.diffBox}>
             <Pressable onPress={() => setDiffOpen((v) => !v)}>
               <Text style={styles.diffTitle}>
-                git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
+                git 변경 · {diff.run ? "이번 턴" : "전체"}: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
               </Text>
             </Pressable>
             {diffOpen && lastRunRef.current && !chat.running ? (
