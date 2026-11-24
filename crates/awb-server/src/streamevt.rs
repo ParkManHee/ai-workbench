@@ -34,14 +34,18 @@ pub struct RateLimit {
     pub project: String,
 }
 
-/// 로그 텍스트에서 마지막 rate_limit_event — CLI 는 바뀐 상태만 다시 내보내므로 마지막 것이 현재 상태다.
+/// 로그 텍스트에서 마지막 한도 정보 — CLI 는 바뀐 상태만 다시 내보내므로 마지막 것이 현재 상태다.
+/// 차단 중에는 rate_limit_event 대신 assistant 응답의 api_error_params 에만 나올 수 있다(t3-code ClaudeAdapterV2.ts:5017).
 pub fn last_rate_limit(text: &str) -> Option<RateLimit> {
     text.lines()
-        .filter(|l| l.contains("\"rate_limit_event\""))
+        .filter(|l| l.contains("\"rate_limit_event\"") || l.contains("\"api_error_params\""))
         .filter_map(|l| {
             let v: Value = serde_json::from_str(l).ok()?;
-            if v.get("type")?.as_str()? != "rate_limit_event" { return None; }
-            let i = v.get("rate_limit_info")?;
+            let i = match v.get("type")?.as_str()? {
+                "rate_limit_event" => v.get("rate_limit_info")?,
+                "assistant" => v.get("api_error_params")?.get("rate_limit_info")?,
+                _ => return None,
+            };
             Some(RateLimit {
                 status: i.get("status")?.as_str()?.to_string(),
                 resets_at: i.get("resetsAt").and_then(|x| x.as_u64()),
@@ -117,6 +121,14 @@ mod tests {
         let text = format!("{real}\n{{\"type\":\"assistant\",\"message\":{{}}}}\n{blocked}\n");
         let last = last_rate_limit(&text).unwrap();
         assert_eq!((last.status.as_str(), last.resets_at), ("rejected", Some(1783512000)));
+    }
+    #[test]
+    fn last_rate_limit_includes_blocked_assistant_error() {
+        // assistant 차단 응답 구조는 t3-code ClaudeAdapterV2.test.ts:3695-3716·9196 픽스처를 따른다
+        let event = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783508400,"rateLimitType":"five_hour"},"session_id":"s1"}"#;
+        let blocked = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"limit"}]},"parent_tool_use_id":null,"error":"rate_limit","api_error_params":{"rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1783512000}},"uuid":"u","session_id":"s1"}"#;
+        let last = last_rate_limit(&format!("{event}\n{blocked}\n")).unwrap();
+        assert_eq!((last.status.as_str(), last.resets_at, last.session_id.as_deref()), ("rejected", Some(1783512000), Some("s1")));
     }
     #[test]
     fn ignores_unparseable() { assert!(parse_line("garbage").is_none()); }
