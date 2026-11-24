@@ -158,9 +158,7 @@ export default function Index() {
           >
             <Text style={styles.label}>{item.label}</Text>
             <Text style={styles.host}>{hostOf(item.baseUrl)}</Text>
-            {onlineById[item.id] !== undefined ? (
-              <Text style={styles.statusIdle}>{presenceLabel(onlineById[item.id], item.lastSeen, Date.now())}</Text>
-            ) : null}
+            <Text style={styles.statusIdle}>{presenceLabel(onlineById[item.id], item.lastSeen, Date.now())}</Text>
             {statusById[item.id] ? (
               <Text style={styles.statusLine}>{statusById[item.id]}</Text>
             ) : statusById[item.id] === "" ? (

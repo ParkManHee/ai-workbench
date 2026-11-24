@@ -46,4 +46,7 @@ describe("presenceLabel", () => {
     expect(presenceLabel(false, now - 125 * 60000, now)).toBe("⚫ 오프라인 · 마지막 응답 2시간 전");
     expect(presenceLabel(false, undefined, now)).toBe("⚫ 오프라인 · 응답 없음");
   });
+  it("not yet checked this launch is neutral even with a stored lastSeen", () => {
+    expect(presenceLabel(undefined, 0, 1e9)).toBe("확인 중…");
+  });
 });
