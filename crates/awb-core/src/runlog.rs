@@ -53,6 +53,33 @@ pub fn mark_done_if_absent(log: &str, code: i32) {
     }
 }
 
+/// 작업트리 스냅샷 트리 해시 — 임시 인덱스에 `add -A` 후 `write-tree`. 실제 인덱스·작업트리는 건드리지 않는다.
+/// 실제 인덱스 사본에서 시작한다: 빈 인덱스에서 시작하면 gitignore 에 걸린 추적 파일이 스냅샷에서 빠지고,
+/// 사본은 stat 캐시로 바뀌지 않은 파일의 재해시도 건너뛴다. git 저장소가 아니면 None.
+pub fn snapshot_tree(workdir: &str) -> Option<String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let git = |args: &[&str], idx: Option<&str>| -> Option<String> {
+        let mut c = PCmd::new("git");
+        c.arg("-C").arg(workdir).args(args);
+        if let Some(i) = idx { c.env("GIT_INDEX_FILE", i); }
+        let o = c.output().ok()?;
+        o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let real = std::path::Path::new(workdir).join(git(&["rev-parse", "--git-path", "index"], None)?);
+    let tmp = std::env::temp_dir().join(format!("awb-idx-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    let tmp_s = tmp.to_string_lossy().into_owned();
+    let _ = fs::copy(&real, &tmp); // 실제 인덱스가 없으면(첫 add 전) 빈 인덱스에서 시작
+    let tree = git(&["add", "-A"], Some(&tmp_s)).and_then(|_| git(&["write-tree"], Some(&tmp_s)));
+    let _ = fs::remove_file(&tmp);
+    tree
+}
+
+/// 스냅샷 해시를 `<log>.t0`/`<log>.t1` 에 남긴다 — run_id 로 찾을 수 있게 로그 옆에 둔다.
+pub fn record_snapshot(workdir: &str, log: &str, which: &str) {
+    if let Some(t) = snapshot_tree(workdir) { let _ = fs::write(format!("{log}.{which}"), t); }
+}
+
 fn changed_files(workdir: &str) -> u32 {
     let out = PCmd::new("git").args(["-C", workdir, "status", "--porcelain"]).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count() as u32).unwrap_or(0)
@@ -67,6 +94,10 @@ pub fn run_status(log: &str, workdir: &str) -> RunStatus {
     // 앱 재시작 후에는 자식이 이미 init에 reparent되었거나 회수되었을 수 있으니 ECHILD 등은 무시한다.
     if let Some(owner) = crate::lock::status(workdir) {
         unsafe { libc::waitpid(owner.pid as i32, std::ptr::null_mut(), libc::WNOHANG); }
+    }
+    // 끝 스냅샷: 성공·실패·취소·타임아웃 모두 여기(done 이후 첫 호출)를 지난다. 락 해제 전에 찍어 다음 턴과 섞이지 않게
+    if std::path::Path::new(&format!("{log}.t0")).exists() && !std::path::Path::new(&format!("{log}.t1")).exists() {
+        record_snapshot(workdir, log, "t1");
     }
     crate::lock::release(workdir);
     let cf = changed_files(workdir);

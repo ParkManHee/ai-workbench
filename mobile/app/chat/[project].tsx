@@ -30,6 +30,7 @@ import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
+import { GitSheet } from "../../src/components/GitSheet";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -56,6 +57,8 @@ interface DiffSummary {
   insertions: number;
   deletions: number;
   entries: DiffEntry[];
+  /** 이 요약을 만든 턴(run) — 없으면 작업트리 전체. 파일 diff 도 같은 기준으로 연다 */
+  run?: string;
 }
 
 export default function Chat() {
@@ -128,6 +131,10 @@ export default function Chat() {
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   // 변경 파일 목록은 기본 접힘 — 펼쳐 두면 파일이 많을 때 답변을 화면 위로 밀어낸다
   const [diffOpen, setDiffOpen] = useState(false);
+  // 마지막 run 기준 "이번 턴" / 작업트리 "전체". 턴 diff 는 끝 스냅샷이 찍힌 뒤(실행 종료 후)에만 있다
+  const diffScopeRef = useRef<"turn" | "all">("turn");
+  const lastRunRef = useRef<string | null>(null);
+  const [gitOpen, setGitOpen] = useState(false);
   // 응답 대기 중 재탭 차단 — state 는 다음 렌더까지 반영되지 않아 ref 로 즉시 막는다
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
@@ -205,6 +212,7 @@ export default function Chat() {
       const r = await makeClient(p.baseUrl, p.token).activeRun(project);
       if (r.run_id && doneRef.current) {
         runIdRef.current = r.run_id;
+        lastRunRef.current = r.run_id;
         setChat((prev) => ({ ...prev, running: true }));
       }
     } catch {
@@ -524,7 +532,10 @@ export default function Chat() {
   async function fetchDiff(p: PC) {
     if (!path) return;
     try {
-      const d: DiffSummary = await makeClient(p.baseUrl, p.token).diff(path);
+      const c = makeClient(p.baseUrl, p.token);
+      const run = diffScopeRef.current === "turn" && doneRef.current ? lastRunRef.current ?? undefined : undefined;
+      // 스냅샷이 없는 run(git 저장소 아님·이전 데몬)은 전체로 — 토글은 실제로 받은 쪽을 표시한다
+      const d: DiffSummary = run ? await c.diff(path, run).then((x) => ({ ...x, run }), () => c.diff(path)) : await c.diff(path);
       setDiff(d);
       setOpenDiffs({}); // 새 요약 기준으로 펼침 상태 초기화
     } catch {
@@ -545,7 +556,7 @@ export default function Chat() {
     }
     if (!pc || !path) return;
     try {
-      const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file);
+      const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file, diff?.run);
       setOpenDiffs((prev) => ({ ...prev, [file]: res.diff.trim() ? res.diff : "(표시할 diff 없음)" }));
     } catch {
       setOpenDiffs((prev) => ({ ...prev, [file]: "(diff 조회 실패)" }));
@@ -649,6 +660,7 @@ export default function Chat() {
       reconnectsRef.current = 0;
       setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
       runIdRef.current = res.run_id!;
+      lastRunRef.current = res.run_id!;
       connectWs(res.run_id!, pc);
     } catch (e) {
       if (isUnauthorized(e)) {
@@ -826,6 +838,16 @@ export default function Chat() {
                 git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
               </Text>
             </Pressable>
+            {lastRunRef.current && !chat.running ? (
+              <View style={styles.optionRow}>
+                {(["turn", "all"] as const).map((sc) => (
+                  <Pressable key={sc} style={(diff.run ? "turn" : "all") === sc ? styles.optionChip : styles.presetChip}
+                    onPress={() => { diffScopeRef.current = sc; if (pc) fetchDiff(pc); }}>
+                    <Text style={(diff.run ? "turn" : "all") === sc ? styles.optionChipText : styles.presetChipText}>{sc === "turn" ? "이번 턴" : "전체"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             {diffOpen ? diff.entries.map((e, i) => (
               <View key={i}>
                 <Pressable onPress={() => toggleFileDiff(e.path)}>
@@ -879,11 +901,11 @@ export default function Chat() {
             />
           </View>
         ))}
-        {/* 실행 종료 + 변경 있음 → 커밋 원탭 */}
+        {/* 실행 종료 + 변경 있음 → 커밋·푸시·PR 시트 */}
         {!chat.running && diff && diff.files > 0 ? (
           <View style={styles.optionRow}>
-            <Pressable style={styles.optionChip} onPress={() => handleSend("변경사항을 확인해서 적절한 메시지로 커밋하고 푸시해줘.")}>
-              <Text style={styles.optionChipText}>📦 커밋+푸시</Text>
+            <Pressable style={styles.optionChip} onPress={() => setGitOpen(true)}>
+              <Text style={styles.optionChipText}>📦 커밋·푸시·PR</Text>
             </Pressable>
           </View>
         ) : null}
@@ -1005,6 +1027,7 @@ export default function Chat() {
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
+      <GitSheet pc={pc} project={project} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
       <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );

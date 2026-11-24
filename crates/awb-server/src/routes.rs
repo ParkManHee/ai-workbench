@@ -67,14 +67,76 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
 }
 
 #[derive(serde::Deserialize)]
-pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String> }
+pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String>, #[serde(default)] pub scope: Option<String>, #[serde(default)] pub run: Option<String> }
 
 /// file 없으면 변경 요약, file 있으면 해당 파일의 unified diff(폰에서 파일 행 탭 시).
-pub async fn diff_handler(Query(q): Query<DiffQuery>) -> Json<serde_json::Value> {
-    match q.file {
+/// scope=turn&run=<id> 면 그 run 의 시작·끝 스냅샷 사이(그 턴의 변경)만.
+pub async fn diff_handler(State(st): State<AppState>, Query(q): Query<DiffQuery>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if q.scope.as_deref() == Some("turn") {
+        let (t0, t1) = q.run.as_deref().and_then(|r| crate::gitdiff::turn_trees(&st.runs_dir, r))
+            .ok_or((StatusCode::NOT_FOUND, "이 run 의 스냅샷이 없습니다".into()))?;
+        return Ok(Json(match q.file {
+            Some(f) => serde_json::json!({ "file": f, "diff": crate::gitdiff::file_diff_turn(&q.path, &t0, &t1, &f) }),
+            None => serde_json::to_value(crate::gitdiff::summarize_turn(&q.path, &t0, &t1)).unwrap_or_default(),
+        }));
+    }
+    Ok(match q.file {
         Some(f) => Json(serde_json::json!({ "file": f, "diff": crate::gitdiff::file_diff(&q.path, &f) })),
         None => Json(serde_json::to_value(crate::gitdiff::summarize(&q.path)).unwrap_or_default()),
+    })
+}
+
+fn project_path(st: &AppState, project: &str) -> Result<String, (StatusCode, String)> {
+    awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).map(|p| p.path)
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))
+}
+
+/// git/gh 는 수 초~수십 초 걸린다(push·PR) — 런타임 워커를 막지 않게 블로킹 풀에서.
+async fn git_blocking(f: impl FnOnce() -> Result<String, (StatusCode, String)> + Send + 'static) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let out = tokio::task::spawn_blocking(f).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(serde_json::json!({ "output": out })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CommitBody { pub message: String, #[serde(default)] pub branch: Option<String> }
+
+pub async fn git_commit_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<CommitBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::commit(&path, &b.message, b.branch.as_deref())).await
+}
+
+pub async fn git_push_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::push(&path)).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct PrBody { pub title: String, #[serde(default)] pub body: String }
+
+pub async fn git_pr_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<PrBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::pr(&path, &b.title, &b.body)).await
+}
+
+/// 커밋 메시지 초안(haiku 한 줄) + 기본 브랜치 여부(앱이 브랜치 이름 칸을 띄울지). 초안 실패는 빈 문자열.
+pub async fn git_draft_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    let (input, on_default) = tokio::task::spawn_blocking(move || (crate::gitdiff::draft_input(&path), crate::gitdiff::on_default_branch(&path)))
+        .await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut message = String::new();
+    if let Some(input) = input {
+        let prompt = format!("아래 git 변경을 한국어 한 줄 커밋 메시지로 요약해라. 메시지 한 줄만 출력한다.\n\n{input}");
+        // 프로젝트 맥락·도구 없이 요약만 — 임시 디렉터리에서, 세션도 남기지 않는다
+        let fut = tokio::process::Command::new(&st.claude_bin)
+            .args(["-p", &prompt, "--model", "haiku", "--tools", "", "--no-session-persistence"])
+            .current_dir(std::env::temp_dir()).kill_on_drop(true).output();
+        if let Ok(Ok(o)) = tokio::time::timeout(std::time::Duration::from_secs(60), fut).await {
+            if o.status.success() {
+                message = String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string();
+            }
+        }
     }
+    Ok(Json(serde_json::json!({ "message": message, "on_default": on_default })))
 }
 
 pub fn default_roots() -> Vec<String> {
@@ -472,6 +534,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/sessions/{project}/{session_id}/end", post(session_end_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
+        .route("/git/{project}/commit", post(git_commit_handler))
+        .route("/git/{project}/push", post(git_push_handler))
+        .route("/git/{project}/pr", post(git_pr_handler))
+        .route("/git/{project}/draft", get(git_draft_handler))
         // 이미지 업로드: 기본 body 한도(2MB)를 사진 크기에 맞게 상향
         .route("/upload", post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));

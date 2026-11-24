@@ -26,12 +26,29 @@ type F = typeof fetch;
 export function makeClient(baseUrl: string, token: string, f: F = fetch) {
   const h = { Authorization: `Bearer ${token}` };
   const jget = async (p: string) => { const r = await f(`${baseUrl}${p}`, { headers: h } as any); if (!(r as any).ok) throw new HttpError((r as any).status, p); return (r as any).json(); };
+  // 실패 시 서버가 돌려준 git/gh 출력을 메시지로 — 폰 토스트에 그대로 보인다
+  const jpost = async (p: string, body: unknown) => {
+    const r = await f(`${baseUrl}${p}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
+    if (!(r as any).ok) {
+      const e = new HttpError((r as any).status, p);
+      e.message = (await (r as any).text()) || e.message;
+      throw e;
+    }
+    return (r as any).json();
+  };
   return {
     projects: (): Promise<Project[]> => jget("/projects"),
     preflight: (): Promise<Preflight> => jget("/preflight"),
-    diff: (path: string) => jget(`/diff?path=${encodeURIComponent(path)}`),
-    diffFile: (path: string, file: string): Promise<{ file: string; diff: string }> =>
-      jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
+    // run 을 주면 그 턴(시작·끝 스냅샷 사이)의 변경만
+    diff: (path: string, run?: string) => jget(`/diff?path=${encodeURIComponent(path)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
+    diffFile: (path: string, file: string, run?: string): Promise<{ file: string; diff: string }> =>
+      jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
+    gitDraft: (project: string): Promise<{ message: string; on_default: boolean }> => jget(`/git/${encodeURIComponent(project)}/draft`),
+    gitCommit: (project: string, message: string, branch?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/commit`, branch ? { message, branch } : { message }),
+    gitPush: (project: string): Promise<{ output: string }> => jpost(`/git/${encodeURIComponent(project)}/push`, {}),
+    gitPr: (project: string, title: string, body?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/pr`, { title, body: body ?? "" }),
     status: (runId: string) => jget(`/status/${runId}`),
     activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
       jget(`/runs/active/${encodeURIComponent(project)}`),

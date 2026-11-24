@@ -79,6 +79,8 @@ pub fn start_stream_run(claude_bin: &str, workdir: &str, settings: &str, plan: b
     }
     std::fs::create_dir_all(&runs_dir).map_err(|e| { crate::lock::release(&workdir_e); format!("runs_dir 생성 실패: {e}") })?;
     let log = unique_log_path(&runs_dir);
+    // 시작 스냅샷: 락을 잡은 뒤·claude 를 띄우기 전 — 턴 시작 전부터 있던 미커밋 변경을 턴 diff 에서 빼는 기준
+    crate::runlog::record_snapshot(&workdir_e, &log, "t0");
     let wrapper = format!("{}/awb-run-stream.sh", app_dir());
     let plan_flag = if plan { "1" } else { "0" };
     let resume_arg = resume.unwrap_or("");

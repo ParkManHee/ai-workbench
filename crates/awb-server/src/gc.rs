@@ -29,8 +29,8 @@ pub fn gc_once(runs_dir: &str, uploads_dir: &str, max_age_secs: u64) -> (usize, 
                     if fs::remove_file(&p).is_ok() { runs_deleted += 1; }
                     if fs::remove_file(&done).is_ok() { runs_deleted += 1; }
                 }
-            } else if name.ends_with(".log.done") || name.ends_with(".mcp.json") {
-                // 고아 .done / 승인 MCP 설정 잔여물
+            } else if name.ends_with(".log.done") || name.ends_with(".mcp.json") || name.ends_with(".log.t0") || name.ends_with(".log.t1") {
+                // 고아 .done / 승인 MCP 설정 잔여물 / 턴 스냅샷 해시
                 if fs::remove_file(&p).is_ok() { runs_deleted += 1; }
             }
         }
