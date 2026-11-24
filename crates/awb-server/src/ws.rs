@@ -109,7 +109,14 @@ async fn stream_loop(
             let _ = socket.send(Message::Close(None)).await; // 정상 종료 프레임(클라이언트 측 abnormal-closure 방지)
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        // 소켓을 읽지 않으면 클라이언트의 close 를 다음 send(최대 20초 ping)에야 알아 그동안 푸시가 억제된다
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1000)) => {}
+            msg = socket.recv() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => {}
+            },
+        }
         since_traffic += 1;
         if since_traffic >= PING_EVERY_SECS {
             since_traffic = 0;

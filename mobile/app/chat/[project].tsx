@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   Platform,
   Pressable,
@@ -115,6 +116,8 @@ export default function Chat() {
   const kbPad = kbVisible ? kbHeight : 0;
   // undefined = not checked yet, null = checked and no PC found (redirecting)
   const [pc, setPc] = useState<PC | null | undefined>(undefined);
+  const pcRef = useRef<PC | null>(null);
+  pcRef.current = pc ?? null;
   // initialChatState() has running:true by design (it's the state reset when a
   // run starts, per reduceEvent's tests); the idle screen before any send
   // should not show a "cancel"/disabled input, so start with running:false.
@@ -166,6 +169,7 @@ export default function Chat() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const runIdRef = useRef<string | null>(null);
+  const bgDetachedRef = useRef(false);
   const doneRef = useRef(true); // true = no run currently in flight
   // 연속 재접속 한도 — 데이터 수신 시 리셋되므로 긴 실행 중 산발적 순단은 계속 복구된다.
   const MAX_RECONNECTS = 5;
@@ -206,6 +210,45 @@ export default function Chat() {
       wsRef.current = null;
     };
   }, []);
+
+  // 백그라운드에선 WS 를 닫는다 — 데몬은 WS 가 붙어 있으면 "보는 중"으로 보고 진행·완료 푸시를 건너뛴다.
+  // 돌아오면 같은 run 에 offset=0 으로 재부착(끊김 재접속과 같은 경로)하고, 그새 끝났으면 서버 기록으로 맞춘다.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", async (st) => {
+      if (st === "background") {
+        const ws = wsRef.current;
+        if (!ws) return;
+        wsRef.current = null; // onclose 의 superseded 가드가 재접속·오류 표시를 막는다
+        ws.close();
+        bgDetachedRef.current = true;
+      } else if (st === "active" && bgDetachedRef.current) {
+        bgDetachedRef.current = false;
+        const p = pcRef.current;
+        if (!p || doneRef.current) return;
+        let runId = runIdRef.current;
+        try {
+          runId = (await makeClient(p.baseUrl, p.token).activeRun(project)).run_id ?? null;
+        } catch {
+          // 조회 실패 시 기억한 run 으로 시도 — 끝났으면 unknown run → 기존 스트림 포기 경로가 기록으로 전환
+        }
+        if (!runId) {
+          doneRef.current = true;
+          setChat((prev) => ({ ...prev, running: false }));
+          reloadTailAndPoll(p);
+          return;
+        }
+        reconnectsRef.current = 0;
+        setChat((prev) => {
+          const msgs = [...prev.messages];
+          if (msgs.at(-1)?.role === "assistant") msgs.pop(); // offset=0 재생이라 이중으로 붙지 않게
+          return { ...initialChatState(), messages: msgs };
+        });
+        connectWs(runId, p);
+      }
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
 
   // 키보드가 열리면 최신 메시지가 입력바에 가려지지 않게 맨아래로 스크롤.
   useEffect(() => {
