@@ -147,6 +147,14 @@ fn post(msgs: &[serde_json::Value]) {
     }
 }
 
+/// run 로그 전체에서 마지막 한도 이벤트를 /info 상태에 반영한다 — 워처와 WS done 경로 공용
+pub fn record_rate_limit(st: &crate::routes::AppState, project: &str, log_text: &str) {
+    if let Some(mut rl) = crate::streamevt::last_rate_limit(log_text) {
+        rl.project = project.to_string();
+        *st.rate_limit.lock().unwrap() = Some(rl);
+    }
+}
+
 /// run 완료를 폴링하다 완료되면 run_status로 락을 해제하고, notified 게이트를 통과할 때만 푸시를 보낸다.
 /// 순서: done 감지 → run_status(락 해제, WS 미접속으로 인한 락 잔류 방지) → should_push 게이트 → (필요시) send.
 /// hung run 상한(초). claude가 멈춰도 락이 무기한 잡히지 않게 워처가 강제 종료한다.
@@ -165,10 +173,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
         let mut progress = ProgressThrottle::default();
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
-            if let Some(mut rl) = crate::streamevt::last_rate_limit(&chunk.text) {
-                rl.project = meta.project.clone();
-                *st.rate_limit.lock().unwrap() = Some(rl);
-            }
+            record_rate_limit(&st, &meta.project, &chunk.text);
             if !chunk.done {
                 let latest = crate::streamevt::latest_progress(&chunk.text);
                 if let Some(p) = progress_to_send(&st.runs, &run_id, &mut progress, latest, std::time::Instant::now()) {

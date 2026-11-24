@@ -102,17 +102,7 @@ async fn stream_loop(
             }
         }
         if chunk.done {
-            let status = awb_core::runlog::run_status(&meta.log, &meta.workdir); // 락 해제 포함
-            let done = crate::streamevt::Event::Done {
-                exit: status.exit_code,
-                verdict: status.verdict.clone(),
-                changed_files: status.changed_files,
-                session_id: session_id.clone(),
-            };
-            // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
-            // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.
-            // send 이전에 게이트를 닫아(mark_notified) 워처가 끼어들 여지를 없앤다.
-            st.runs.mark_notified(&run_id); // WS로 전달 예정 → 이후 푸시 스킵(게이트를 먼저 닫음)
+            let done = finish(&st, &meta, &run_id, session_id.clone());
             let _ = socket
                 .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
                 .await;
@@ -127,6 +117,23 @@ async fn stream_loop(
                 return; // 상대가 죽은 연결 — 정리
             }
         }
+    }
+}
+
+/// done 이벤트를 만들기 전에 끝내야 할 상태 반영 — 반환값을 보낸 직후 앱이 /info 를 다시 읽으므로
+/// 한도 저장은 여기서 해야 한다(1.5초 주기 워처에 맡기면 앱 조회가 먼저 와 배지가 안 뜬다).
+pub(crate) fn finish(st: &AppState, meta: &crate::runreg::RunMeta, run_id: &str, session_id: Option<String>) -> crate::streamevt::Event {
+    let status = awb_core::runlog::run_status(&meta.log, &meta.workdir); // 락 해제 포함
+    crate::push::record_rate_limit(st, &meta.project, &awb_core::runlog::read_log(&meta.log, 0).text);
+    // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
+    // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.
+    // send 이전에 게이트를 닫아(mark_notified) 워처가 끼어들 여지를 없앤다.
+    st.runs.mark_notified(run_id); // WS로 전달 예정 → 이후 푸시 스킵(게이트를 먼저 닫음)
+    crate::streamevt::Event::Done {
+        exit: status.exit_code,
+        verdict: status.verdict,
+        changed_files: status.changed_files,
+        session_id,
     }
 }
 

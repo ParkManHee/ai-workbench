@@ -901,6 +901,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn info_has_rate_limit_once_ws_done_is_built() {
+        // QA #2: 앱은 done 을 받자마자 /info 를 읽는다 — 워처 틱 전이어도 한도가 실려 있어야 한다
+        let dir = std::env::temp_dir().join("awb_routes_done_rl"); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("r.log").to_string_lossy().to_string();
+        std::fs::write(&log, "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":1783508400},\"session_id\":\"s1\"}\n").unwrap();
+        std::fs::write(format!("{log}.done"), "1").unwrap();
+        let devices_path = tmp("awb_routes_devices_done_rl.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.devices.add("tok-rl", "test-device");
+        let meta = crate::runreg::RunMeta { log, pgid: 0, workdir: dir.to_string_lossy().to_string(), project: "p".into(), notified: false, fork_of: None };
+        state.runs.insert("r", meta.clone());
+        crate::ws::finish(&state, &meta, "r", None);
+        let res = crate::routes::router(state).oneshot(Request::builder().uri("/info").header("authorization", "Bearer tok-rl").body(Body::empty()).unwrap()).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["rate_limit"]["status"], "rejected");
+        assert_eq!(body["rate_limit"]["project"], "p");
+    }
+
+    #[tokio::test]
     async fn pair_route_requires_no_auth() {
         let devices_path = tmp("awb_routes_devices_pair.json"); let _ = std::fs::remove_file(&devices_path);
         let mut state = test_state("/tmp", &devices_path);
