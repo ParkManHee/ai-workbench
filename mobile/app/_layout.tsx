@@ -20,7 +20,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-async function registerPush(pc: PC): Promise<void> {
+async function registerPush(pcs: PC[]): Promise<void> {
   // Push is an optional convenience (completion notifications); any failure
   // here (no FCM credentials in dev, permission denied, network error, ...)
   // must never crash or block the app.
@@ -43,7 +43,10 @@ async function registerPush(pc: PC): Promise<void> {
       return;
     }
     const expoToken = await Notifications.getExpoPushTokenAsync();
-    await makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data);
+    // PC 마다 따로 catch — 꺼진 PC 하나가 다른 PC 등록을 막지 않게
+    await Promise.all(pcs.map((pc) =>
+      makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data).catch((e) => console.warn("[push] register failed:", pc.baseUrl, e))
+    ));
   } catch (e) {
     console.warn("[push] register failed:", e);
   }
@@ -70,15 +73,14 @@ async function openFromNotification(data: Record<string, unknown> | undefined): 
 
 export default function RootLayout() {
   const pathname = usePathname();
-  const pushTried = useRef(false);
-  // 첫 실행엔 PC 가 없어 등록을 건너뛰므로, 페어링 후 화면이 바뀔 때 다시 본다(전엔 다음 앱 시작까지 미등록)
+  const pushTried = useRef(new Set<string>());
+  // 첫 실행엔 PC 가 없어 등록을 건너뛰므로, 화면이 바뀔 때마다 아직 시도 안 한 PC(새로 페어링한 PC 포함)를 등록한다
   useEffect(() => {
-    if (pushTried.current) return;
     loadPCs().then((pcs) => {
-      if (pcs.length === 0 || pushTried.current) return;
-      pushTried.current = true;
-      // Best-effort: register push for the first PC only (v1 simplification).
-      registerPush(pcs[0]);
+      const fresh = pcs.filter((p) => !pushTried.current.has(p.id));
+      if (fresh.length === 0) return;
+      fresh.forEach((p) => pushTried.current.add(p.id));
+      registerPush(fresh);
     });
   }, [pathname]);
 
