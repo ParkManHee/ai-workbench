@@ -905,7 +905,7 @@ export default function Chat() {
                 git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
               </Text>
             </Pressable>
-            {lastRunRef.current && !chat.running ? (
+            {diffOpen && lastRunRef.current && !chat.running ? (
               <View style={styles.optionRow}>
                 {(["turn", "all"] as const).map((sc) => (
                   <Pressable key={sc} style={(diff.run ? "turn" : "all") === sc ? styles.optionChip : styles.presetChip}
@@ -1357,6 +1357,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: t.border,
+    // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
+    backgroundColor: t.box,
   },
   controlRow: {
     flexDirection: "row",
