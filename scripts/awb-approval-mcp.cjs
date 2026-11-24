@@ -56,7 +56,7 @@ rl.on("line", async (line) => {
         const j = await res.json();
         decision = j.allow
           ? { behavior: "allow", updatedInput: args.input || {} }
-          : { behavior: "deny", message: "폰에서 거부되었습니다" };
+          : { behavior: "deny", message: j.message || "폰에서 거부되었습니다" };
       }
     } catch (_) { /* 기본 deny 유지 */ }
     send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(decision) }] } });

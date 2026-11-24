@@ -43,8 +43,8 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       const r = await f(`${baseUrl}/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: h } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, "/devices/revoke");
     },
-    permissionAnswer: (id: string, allow: boolean) =>
-      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow }) } as any),
+    permissionAnswer: (id: string, allow: boolean, forSession = false, message?: string) =>
+      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow, for_session: forSession, message }) } as any),
     info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number }> => jget("/info"),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
@@ -53,8 +53,9 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean, model?: string, effort?: string) => {
-      const body: Record<string, unknown> = { prompt, plan, approval: !!approval };
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, mode?: string, model?: string, effort?: string) => {
+      const body: Record<string, unknown> = { prompt, plan };
+      if (mode) body.mode = mode;
       if (model) body.model = model;
       if (effort) body.effort = effort;
       if (resumeSessionId) body.resume_session_id = resumeSessionId;

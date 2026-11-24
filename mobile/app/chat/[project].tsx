@@ -109,8 +109,8 @@ export default function Chat() {
   const [chat, setChat] = useState<ChatState>(() => ({ ...initialChatState(), running: false }));
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState(false);
-  // 승인 모드: 툴 권한을 사전 허용 대신 폰으로 물어봄(허용/거부 버튼)
-  const [approval, setApproval] = useState(false);
+  // 권한 모드(claude --permission-mode) — 전체 외에는 claude 가 묻는 것을 폰으로 받는다
+  const [mode, setMode] = useState("auto");
   // plan 실행 완료 후 "이 계획대로 진행" 원탭 칩
   const [showPlanApprove, setShowPlanApprove] = useState(false);
   const planAtSendRef = useRef(false);
@@ -124,6 +124,7 @@ export default function Chat() {
   const [selectText, setSelectText] = useState<string | null>(null);
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
+  const [denyReasons, setDenyReasons] = useState<Record<string, string>>({});
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   // 변경 파일 목록은 기본 접힘 — 펼쳐 두면 파일이 많을 때 답변을 화면 위로 밀어낸다
   const [diffOpen, setDiffOpen] = useState(false);
@@ -253,11 +254,12 @@ export default function Chat() {
     ] });
   }
 
-  async function answerPermission(id: string, allow: boolean) {
+  async function answerPermission(id: string, allow: boolean, forSession = false) {
     if (!pc) return;
     setPerms((prev) => prev.filter((p) => p.id !== id));
+    const reason = allow ? undefined : denyReasons[id]?.trim() || undefined;
     try {
-      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
+      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow, forSession, reason);
     } catch {
       // 실패 시 다음 폴에서 다시 나타난다
     }
@@ -277,6 +279,12 @@ export default function Chat() {
       { label: "Sonnet", onPress: () => setModel("sonnet") },
       { label: "Haiku", onPress: () => setModel("haiku") },
     ] });
+  }
+
+  function pickMode() {
+    setSheet({ title: "권한 모드", message: `현재: ${MODE_LABELS[mode]}`, choices:
+      Object.entries(MODE_LABELS).map(([m, label]) => ({ label, onPress: () => setMode(m) })),
+    });
   }
 
   function pickEffort() {
@@ -622,7 +630,7 @@ export default function Chat() {
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, approval, model || undefined, effort || undefined);
+      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined);
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({
@@ -853,12 +861,22 @@ export default function Chat() {
             <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
             <View style={styles.permButtons}>
               <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true)}>
-                <Text style={styles.buttonText}>허용</Text>
+                <Text style={styles.buttonText}>이번만</Text>
+              </Pressable>
+              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true, true)}>
+                <Text style={styles.buttonText}>세션 동안</Text>
               </Pressable>
               <Pressable style={styles.permDeny} onPress={() => answerPermission(pm.id, false)}>
-                <Text style={styles.buttonText}>거부</Text>
+                <Text style={styles.buttonText}>거절</Text>
               </Pressable>
             </View>
+            <TextInput
+              style={styles.permReason}
+              value={denyReasons[pm.id] ?? ""}
+              onChangeText={(v) => setDenyReasons((prev) => ({ ...prev, [pm.id]: v }))}
+              placeholder="거절 사유(선택) — claude 에게 전달"
+              placeholderTextColor={t.placeholder}
+            />
           </View>
         ))}
         {/* 실행 종료 + 변경 있음 → 커밋 원탭 */}
@@ -944,13 +962,9 @@ export default function Chat() {
               {effort || "effort"}
             </Text>
           </Pressable>
-          <Text style={styles.planLabel}>승인</Text>
-          <Switch
-            value={approval}
-            onValueChange={setApproval}
-            disabled={running}
-            style={{ transform: [{ scale: 0.85 }] }}
-          />
+          <Pressable onPress={pickMode} disabled={running}>
+            <Text style={[styles.planLabel, { color: t.accent, fontWeight: "700" }]}>{MODE_LABELS[mode]}</Text>
+          </Pressable>
         </View>
         <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
@@ -995,6 +1009,9 @@ export default function Chat() {
     </View>
   );
 }
+
+// 값은 서버 PERMISSION_MODES(claude --permission-mode)와 같아야 한다
+const MODE_LABELS: Record<string, string> = { default: "감독", acceptEdits: "편집 자동", auto: "Auto", bypassPermissions: "전체" };
 
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
@@ -1102,6 +1119,15 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 18,
     paddingVertical: 8,
+  },
+  permReason: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 12,
+    color: t.text,
   },
   permDeny: {
     backgroundColor: "#c0392b",
