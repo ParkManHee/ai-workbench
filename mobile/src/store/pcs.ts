@@ -37,3 +37,9 @@ export async function getPC(id: string): Promise<PC | null> {
   const list = await loadPCs();
   return list.find((p) => p.id === id) ?? null;
 }
+
+/** 응답한 PC들의 lastSeen 을 한 번에 기록(PC별로 load→save 하면 서로 덮어쓴다). */
+export async function touchPCs(seen: Record<string, number>): Promise<void> {
+  const list = await loadPCs();
+  await savePCs(list.map((p) => (seen[p.id] !== undefined ? { ...p, lastSeen: seen[p.id] } : p)));
+}

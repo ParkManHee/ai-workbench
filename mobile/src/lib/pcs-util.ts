@@ -15,3 +15,12 @@ export function upsertPC(list: PC[], pc: PC): PC[] {
   next[idx] = pc;
   return next;
 }
+
+/** 온라인/오프라인 표시 문구. 오프라인이면 마지막 응답 시각(없으면 "응답 없음")을 붙인다. */
+export function presenceLabel(online: boolean, lastSeen: number | undefined, now: number): string {
+  if (online) return "🟢 온라인";
+  if (lastSeen === undefined) return "⚫ 오프라인 · 응답 없음";
+  const min = Math.floor(Math.max(0, now - lastSeen) / 60000);
+  const ago = min < 1 ? "방금" : min < 60 ? `${min}분 전` : min < 1440 ? `${Math.floor(min / 60)}시간 전` : `${Math.floor(min / 1440)}일 전`;
+  return `⚫ 오프라인 · 마지막 응답 ${ago}`;
+}

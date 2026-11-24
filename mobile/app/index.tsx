@@ -1,10 +1,11 @@
 import { useCallback, useState, useMemo } from "react";
-import { Alert, Button, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Button, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EXPECTED_API_VERSION, makeClient } from "../src/lib/api";
 import type { PC, Project } from "../src/lib/types";
-import { loadPCs, removePC } from "../src/store/pcs";
+import { loadPCs, removePC, touchPCs } from "../src/store/pcs";
+import { presenceLabel } from "../src/lib/pcs-util";
 import { useTheme, type Theme } from "../src/lib/theme";
 
 function hostOf(baseUrl: string): string {
@@ -19,6 +20,20 @@ function statusLine(projects: Project[]): string {
   return parts.join(" · ");
 }
 
+/** /health 는 인증 필요 라우트라 토큰을 싣는다. 401 이어도 응답이 왔으면 PC 는 켜져 있다. */
+async function pingHealth(pc: PC): Promise<boolean> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 3000);
+  try {
+    await fetch(`${pc.baseUrl}/health`, { headers: { Authorization: `Bearer ${pc.token}` }, signal: ctl.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default function Index() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
@@ -29,6 +44,9 @@ export default function Index() {
   const [statusById, setStatusById] = useState<Record<string, string>>({});
   // PC별 버전 불일치 경고(api_version ≠ 앱 기대값)
   const [versionWarnById, setVersionWarnById] = useState<Record<string, string>>({});
+  // PC별 온라인 여부(undefined = 확인 전)
+  const [onlineById, setOnlineById] = useState<Record<string, boolean>>({});
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     const list = await loadPCs();
@@ -38,6 +56,18 @@ export default function Index() {
       return;
     }
     setPcs(list);
+    Promise.all(list.map(async (pc) => {
+      const ok = await pingHealth(pc);
+      setOnlineById((prev) => ({ ...prev, [pc.id]: ok }));
+      return ok ? pc.id : null;
+    })).then(async (ids) => {
+      const now = Date.now();
+      const seen: Record<string, number> = {};
+      for (const id of ids) if (id) seen[id] = now;
+      if (Object.keys(seen).length === 0) return;
+      await touchPCs(seen);
+      setPcs((cur) => cur && cur.map((p) => (seen[p.id] !== undefined ? { ...p, lastSeen: now } : p)));
+    });
     // 각 PC의 프로젝트 상태를 병렬 best-effort 조회(오프라인 PC는 조용히 스킵)
     list.forEach(async (pc) => {
       try {
@@ -73,6 +103,12 @@ export default function Index() {
     }, [refresh])
   );
 
+  async function handleRefresh() {
+    setRefreshing(true);
+    await refresh();
+    setRefreshing(false);
+  }
+
   function handlePress(pc: PC) {
     router.push({ pathname: "/projects", params: { pc: pc.id } });
   }
@@ -106,6 +142,7 @@ export default function Index() {
       </View>
       <FlatList
         data={pcs}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
         ListEmptyComponent={
@@ -121,6 +158,9 @@ export default function Index() {
           >
             <Text style={styles.label}>{item.label}</Text>
             <Text style={styles.host}>{hostOf(item.baseUrl)}</Text>
+            {onlineById[item.id] !== undefined ? (
+              <Text style={styles.statusIdle}>{presenceLabel(onlineById[item.id], item.lastSeen, Date.now())}</Text>
+            ) : null}
             {statusById[item.id] ? (
               <Text style={styles.statusLine}>{statusById[item.id]}</Text>
             ) : statusById[item.id] === "" ? (

@@ -11,7 +11,7 @@ export interface ChatMsg { role: "user" | "assistant"; text: string; tools?: str
 export interface ChatState { messages: ChatMsg[]; running: boolean; verdict: string | null; changedFiles: number; error: string | null }
 
 /** 페어링된 PC 하나(멀티-PC 지원). id는 baseUrl에서 파생된 안정적 식별자(pcs-util#pcId 참고). */
-export interface PC { id: string; label: string; baseUrl: string; token: string }
+export interface PC { id: string; label: string; baseUrl: string; token: string; lastSeen?: number }
 /** 데몬 `/sessions/:project` 응답 항목. */
 export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean }
 /** 데몬 `/transcript/:project/:sessionId` 응답의 메시지 항목. */
