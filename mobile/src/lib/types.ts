@@ -16,3 +16,7 @@ export interface PC { id: string; label: string; baseUrl: string; token: string;
 export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean }
 /** 데몬 `/transcript/:project/:sessionId` 응답의 메시지 항목. */
 export interface TranscriptMsg { role: string; text: string; tools: string[]; tool_details: string[]; options?: string[]; todos?: string[] }
+/** /info.rate_limit — claude 스트림의 마지막 rate_limit_event. status: allowed | allowed_warning | rejected(차단) */
+export interface RateLimit { status: string; resets_at: number | null; rate_limit_type: string | null; session_id: string | null; project: string }
+/** 한도 리셋 때 이어가기 예약(프로젝트당 1개) */
+export interface ResumeReservation { session_id: string; resets_at: number; mode?: string; model?: string | null; effort?: string | null }

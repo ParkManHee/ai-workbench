@@ -108,6 +108,10 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
         let started = std::time::Instant::now();
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
+            if let Some(mut rl) = crate::streamevt::last_rate_limit(&chunk.text) {
+                rl.project = meta.project.clone();
+                *st.rate_limit.lock().unwrap() = Some(rl);
+            }
             if !chunk.done && started.elapsed().as_secs() >= timeout {
                 // hung run: 그룹 종료 + 타임아웃 코드 기록 → 다음 틱에 done 경로(락 해제·푸시)로 수렴
                 eprintln!("run {run_id} 타임아웃({timeout}s) — 프로세스 그룹 강제 종료");

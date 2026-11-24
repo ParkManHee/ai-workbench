@@ -1,4 +1,4 @@
-import type { Project, Preflight, SessionInfo, TranscriptMsg } from "./types";
+import type { Project, Preflight, RateLimit, ResumeReservation, SessionInfo, TranscriptMsg } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -62,7 +62,14 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     },
     permissionAnswer: (id: string, allow: boolean, forSession = false, message?: string) =>
       f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow, for_session: forSession, message }) } as any),
-    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number }> => jget("/info"),
+    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number; rate_limit?: RateLimit | null }> => jget("/info"),
+    resumeAtReset: (project: string): Promise<ResumeReservation | null> => jget(`/resume-at-reset/${encodeURIComponent(project)}`),
+    setResumeAtReset: async (project: string, r: ResumeReservation) => {
+      const p = `/resume-at-reset/${encodeURIComponent(project)}`;
+      const res = await f(`${baseUrl}${p}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(r) } as any);
+      if (!(res as any).ok) throw new HttpError((res as any).status, p);
+    },
+    cancelResumeAtReset: (project: string) => f(`${baseUrl}/resume-at-reset/${encodeURIComponent(project)}`, { method: "DELETE", headers: h } as any),
     sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),

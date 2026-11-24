@@ -23,6 +23,36 @@ fn truncate_chars(s: &str, max_chars: usize) -> (String, bool) {
     (truncated, truncated_flag)
 }
 
+/// 사용량 한도 상태 — claude 스트림의 rate_limit_event 그대로(남은 %는 스트림에 없다).
+/// status: "allowed" | "allowed_warning" | "rejected"(차단). project 는 워처가 채운다.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct RateLimit {
+    pub status: String,
+    pub resets_at: Option<u64>,
+    pub rate_limit_type: Option<String>,
+    pub session_id: Option<String>,
+    pub project: String,
+}
+
+/// 로그 텍스트에서 마지막 rate_limit_event — CLI 는 바뀐 상태만 다시 내보내므로 마지막 것이 현재 상태다.
+pub fn last_rate_limit(text: &str) -> Option<RateLimit> {
+    text.lines()
+        .filter(|l| l.contains("\"rate_limit_event\""))
+        .filter_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            if v.get("type")?.as_str()? != "rate_limit_event" { return None; }
+            let i = v.get("rate_limit_info")?;
+            Some(RateLimit {
+                status: i.get("status")?.as_str()?.to_string(),
+                resets_at: i.get("resetsAt").and_then(|x| x.as_u64()),
+                rate_limit_type: i.get("rateLimitType").and_then(|x| x.as_str()).map(String::from),
+                session_id: v.get("session_id").and_then(|x| x.as_str()).map(String::from),
+                project: String::new(),
+            })
+        })
+        .last()
+}
+
 pub fn parse_line(line: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(line).ok()?;
     match v.get("type").and_then(|t| t.as_str()) {
@@ -75,6 +105,18 @@ mod tests {
             Some(Event::ToolUse { name, .. }) => assert_eq!(name, "Bash"),
             other => panic!("expected ToolUse, got {other:?}"),
         }
+    }
+    #[test]
+    fn last_rate_limit_picks_last_event() {
+        // 실측 줄(~/.claude/.awb-runs/1783505085-7679-0.log) 그대로 + 뒤에 차단 이벤트
+        let real = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783508400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false},"uuid":"06880897-b148-4535-ab2d-7d64eb56fd8c","session_id":"0504bb6f-da3c-4c2d-a7ae-7eb686c54928"}"#;
+        let first = last_rate_limit(real).unwrap();
+        assert_eq!((first.status.as_str(), first.resets_at, first.rate_limit_type.as_deref()), ("allowed", Some(1783508400), Some("five_hour")));
+        assert_eq!(first.session_id.as_deref(), Some("0504bb6f-da3c-4c2d-a7ae-7eb686c54928"));
+        let blocked = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1783512000,"rateLimitType":"five_hour"},"session_id":"s2"}"#;
+        let text = format!("{real}\n{{\"type\":\"assistant\",\"message\":{{}}}}\n{blocked}\n");
+        let last = last_rate_limit(&text).unwrap();
+        assert_eq!((last.status.as_str(), last.resets_at), ("rejected", Some(1783512000)));
     }
     #[test]
     fn ignores_unparseable() { assert!(parse_line("garbage").is_none()); }

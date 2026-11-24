@@ -35,6 +35,10 @@ pub struct AppState {
     pub base_url: String,
     /// 데몬 시작 시각(epoch초) — /info uptime용
     pub started_at: u64,
+    /// 마지막으로 관측한 사용량 한도(run 로그의 rate_limit_event) — /info 로 앱에 싣는다
+    pub rate_limit: Arc<Mutex<Option<crate::streamevt::RateLimit>>>,
+    /// 한도 리셋 때 이어가기 예약
+    pub resume: crate::resume::ResumeStore,
 }
 
 /// 폰↔데몬 프로토콜 버전 — 폰이 자신이 아는 버전과 비교해 업데이트 배너를 띄운다.
@@ -161,7 +165,7 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// `claude --permission-mode` 로 그대로 넘기는 값 — 감독·편집 자동·Auto·전체. 마지막만 승인 중계 없이 돈다
 const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "auto", "bypassPermissions"];
-fn default_mode() -> String { "auto".into() }
+pub(crate) fn default_mode() -> String { "auto".into() }
 
 #[derive(serde::Deserialize)]
 pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
@@ -399,6 +403,7 @@ pub struct InfoDto {
     pub api_version: u32,
     pub uptime_secs: u64,
     pub active_runs: usize,
+    pub rate_limit: Option<crate::streamevt::RateLimit>,
 }
 
 /// macOS 친숙한 이름(`scutil --get ComputerName`) → 실패 시 `hostname` 명령 → 최종 폴백 `"Mac"`.
@@ -429,7 +434,27 @@ pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
         api_version: API_VERSION,
         uptime_secs: now.saturating_sub(st.started_at),
         active_runs: st.runs.count(),
+        rate_limit: st.rate_limit.lock().unwrap().clone(),
     })
+}
+
+pub async fn resume_get_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<Option<crate::resume::Reservation>> {
+    Json(st.resume.get(&project))
+}
+
+/// 프로젝트당 1개 — 다시 걸면 덮어쓴다. 값 검증은 실행 시점 /chat 과 같은 기준으로 미리 한다.
+pub async fn resume_set_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<crate::resume::Reservation>) -> Result<StatusCode, (StatusCode, String)> {
+    project_path(&st, &project)?;
+    if let Some(e) = b.effort.as_deref() {
+        if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
+    }
+    if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
+    st.resume.set(&project, b);
+    Ok(StatusCode::OK)
+}
+
+pub async fn resume_delete_handler(State(st): State<AppState>, Path(project): Path<String>) -> StatusCode {
+    if st.resume.remove(&project) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
@@ -534,6 +559,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/sessions/{project}/{session_id}/end", post(session_end_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
+        .route("/resume-at-reset/{project}", get(resume_get_handler).post(resume_set_handler).delete(resume_delete_handler))
         .route("/git/{project}/commit", post(git_commit_handler))
         .route("/git/{project}/push", post(git_push_handler))
         .route("/git/{project}/pr", post(git_pr_handler))
@@ -578,6 +604,8 @@ mod tests {
             perm_secret: "test-perm-secret".to_string(),
             base_url: "http://127.0.0.1:0".to_string(),
             started_at: 0,
+            rate_limit: Default::default(),
+            resume: crate::resume::ResumeStore::load(&std::env::temp_dir().join("awb_routes_test_resume.json").to_string_lossy().to_string()),
         }
     }
 

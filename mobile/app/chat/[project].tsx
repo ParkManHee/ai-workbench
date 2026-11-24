@@ -24,7 +24,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import { rewriteBangCommand } from "../../src/lib/bang";
-import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
+import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
@@ -42,6 +42,12 @@ const PROMPT_PRESETS = [
   "작업로그 갱신해줘",
   "/compact",
 ];
+
+/** epoch초 → 현지 HH:mm */
+function hhmm(sec: number) {
+  const d = new Date(sec * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
@@ -205,6 +211,42 @@ export default function Chat() {
       return () => clearTimeout(t);
     }
   }, [kbVisible]);
+
+  // 사용량 한도·이어가기 예약 — 한도는 run 로그에서만 바뀌므로 진입 시와 실행이 끝날 때 갱신
+  const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
+  const [reservation, setReservation] = useState<ResumeReservation | null>(null);
+  useEffect(() => {
+    if (!pc || chat.running) return;
+    const c = makeClient(pc.baseUrl, pc.token);
+    Promise.all([c.info(), c.resumeAtReset(project)])
+      .then(([info, r]) => {
+        setRateLimit(info.rate_limit ?? null);
+        setReservation(r);
+      })
+      .catch(() => {});
+  }, [pc, chat.running, project]);
+
+  async function reserveResume(rl: RateLimit) {
+    const sessionId = rl.session_id ?? sidRef.current;
+    if (!pc || !rl.resets_at || !sessionId) return;
+    const r: ResumeReservation = { session_id: sessionId, resets_at: rl.resets_at, mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    try {
+      await makeClient(pc.baseUrl, pc.token).setResumeAtReset(project, r);
+      setReservation(r);
+    } catch (e) {
+      Alert.alert("예약 실패", String(e));
+    }
+  }
+
+  async function cancelResume() {
+    if (!pc) return;
+    try {
+      await makeClient(pc.baseUrl, pc.token).cancelResumeAtReset(project);
+      setReservation(null);
+    } catch (e) {
+      Alert.alert("취소 실패", String(e));
+    }
+  }
 
   // 진행 중 실행(다른 기기/이전 세션에서 시작)에 attach — 취소 버튼이 동작하게 한다.
   async function attachActiveRun(p: PC) {
@@ -727,6 +769,31 @@ export default function Chat() {
           </Pressable>
         );
       })()}
+      {(() => {
+        // 리셋 시각이 지난 값은 낡은 상태 — 다음 run 이 새로 알려 줄 때까지 숨긴다
+        const rl = rateLimit?.resets_at && rateLimit.resets_at > Date.now() / 1000 ? rateLimit : null;
+        const limited = rl && rl.status !== "allowed" ? rl : null;
+        const canReserve = !reservation && !running && limited?.status === "rejected" && limited.project === project;
+        if (!limited && !reservation) return null;
+        return (
+          <View style={styles.limitBar}>
+            {limited ? (
+              <Text style={[styles.limitText, { color: limited.status === "rejected" ? "#d93025" : "#e8a33d" }]}>
+                {limited.status === "rejected" ? "⛔ 사용량 한도 도달" : "⚠ 사용량 한도 임박"} · 리셋 {hhmm(limited.resets_at!)}
+              </Text>
+            ) : null}
+            {reservation ? (
+              <Pressable style={styles.presetChip} onPress={cancelResume}>
+                <Text style={styles.presetChipText}>예약됨 {hhmm(reservation.resets_at + 60)} · 취소</Text>
+              </Pressable>
+            ) : canReserve ? (
+              <Pressable style={styles.presetChip} onPress={() => reserveResume(limited!)}>
+                <Text style={styles.presetChipText}>리셋 때 이어가기</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        );
+      })()}
       <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
@@ -1097,6 +1164,20 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   presetChipText: {
     color: t.chipText,
     fontSize: 12,
+  },
+  limitBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+  },
+  limitText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   todoBar: {
     borderBottomWidth: StyleSheet.hairlineWidth,

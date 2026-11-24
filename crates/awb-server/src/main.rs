@@ -8,6 +8,7 @@ mod gc;
 mod launchd;
 mod perm;
 mod queue;
+mod resume;
 mod routes;
 mod runreg;
 mod sessions;
@@ -61,8 +62,11 @@ async fn serve() {
         started_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
+        rate_limit: Default::default(),
+        resume: resume::ResumeStore::load(&format!("{}/.claude/.awb-resume-at-reset.json", std::env::var("HOME").unwrap_or_default())),
     };
     gc::spawn_gc(cfg.runs_dir.clone(), state.uploads_dir.clone());
+    resume::spawn_scheduler(state.clone());
     let app = routes::router(state.clone());
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
