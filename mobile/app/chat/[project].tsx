@@ -1045,20 +1045,23 @@ export default function Chat() {
             disabled={running}
             style={{ transform: [{ scale: 0.85 }] }}
           />
-          <Pressable onPress={pickModel}>
-            <Text style={[styles.planLabel, model ? { color: t.accent, fontWeight: "700" } : null]}>
+        </View>
+          {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
+          <Pressable style={styles.presetChip} onPress={pickModel}>
+            <Text style={[styles.presetChipText, model ? { color: t.accent, fontWeight: "700" } : null]}>
               {model || "모델"}
             </Text>
           </Pressable>
-          <Pressable onPress={pickEffort}>
-            <Text style={[styles.planLabel, effort ? { color: t.accent, fontWeight: "700" } : null]}>
+          <Pressable style={styles.presetChip} onPress={pickEffort}>
+            <Text style={[styles.presetChipText, effort ? { color: t.accent, fontWeight: "700" } : null]}>
               {effort || "effort"}
             </Text>
           </Pressable>
-          <Pressable onPress={pickMode} disabled={running}>
-            <Text style={[styles.planLabel, { color: t.accent, fontWeight: "700" }]}>{MODE_LABELS[mode]}</Text>
+          <Pressable style={[styles.presetChip, running ? { opacity: 0.5 } : null]} onPress={pickMode} disabled={running}>
+            <Text style={styles.presetChipText}>
+              권한 <Text style={{ color: t.accent, fontWeight: "700" }}>{MODE_LABELS[mode]}</Text>
+            </Text>
           </Pressable>
-        </View>
         <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
         </Pressable>
