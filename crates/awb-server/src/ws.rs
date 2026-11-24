@@ -19,6 +19,14 @@ pub fn split_new_lines(buf: &str) -> (Vec<String>, usize) {
     (lines, consumed)
 }
 
+/// stream_loop 의 모든 return 경로에서 연결 수를 되돌리려고 Drop 에 맡긴다.
+struct Attached(crate::runreg::RunRegistry, String);
+impl Drop for Attached {
+    fn drop(&mut self) {
+        self.0.detach(&self.1);
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct StreamQuery {
     #[serde(default)]
@@ -60,6 +68,9 @@ async fn stream_loop(
             return;
         }
     };
+    // shortcut: 끊긴 연결은 다음 send/ping(최대 20초) 때 감지돼 그동안 진행 푸시가 빠진다, 기기에서 공백이 보이면 올린다
+    st.runs.attach(&run_id);
+    let _attached = Attached(st.runs.clone(), run_id.clone());
     let mut pending = String::new();
     let mut session_id: Option<String> = None;
     // keepalive: 폰 절전/NAT가 유휴 연결을 끊지 않도록 주기적으로 ping 프레임 전송

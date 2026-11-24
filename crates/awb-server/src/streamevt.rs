@@ -57,6 +57,37 @@ pub fn last_rate_limit(text: &str) -> Option<RateLimit> {
         .last()
 }
 
+/// 진행 알림에 싣는 현재 단계 — 마지막 tool_use 도구 이름과 마지막 TodoWrite 의 (완료, 전체).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub step: String,
+    pub todo: Option<(usize, usize)>,
+}
+
+/// 로그 텍스트에서 현재 단계. parse_line 의 ToolUse 는 input 을 200자로 잘라 todos 를 못 읽으므로 따로 본다.
+pub fn latest_progress(text: &str) -> Option<Progress> {
+    let mut step = None;
+    let mut todo = None;
+    for l in text.lines().filter(|l| l.contains("\"tool_use\"")) {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else { continue };
+        for item in content.iter().filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("tool_use")) {
+            let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
+            if name == "TodoWrite" {
+                if let Some(todos) = item.get("input").and_then(|i| i.get("todos")).and_then(|t| t.as_array()) {
+                    let done = todos.iter().filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("completed")).count();
+                    todo = Some((done, todos.len()));
+                }
+            }
+            step = Some(name.to_string());
+        }
+    }
+    step.map(|step| Progress { step, todo })
+}
+
 pub fn parse_line(line: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(line).ok()?;
     match v.get("type").and_then(|t| t.as_str()) {

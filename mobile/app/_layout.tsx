@@ -6,6 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import * as Notifications from "expo-notifications";
 import { makeClient } from "../src/lib/api";
+import { PROGRESS_CHANNEL } from "../src/lib/progress";
 import type { PC } from "../src/lib/types";
 import { loadPCs } from "../src/store/pcs";
 
@@ -28,6 +29,13 @@ async function registerPush(pc: PC): Promise<void> {
     await Notifications.setNotificationChannelAsync("default", {
       name: "실행 알림",
       importance: Notifications.AndroidImportance.HIGH,
+    });
+    // 진행 알림은 15초마다 덮어써지므로 소리·진동·헤드업 없이
+    await Notifications.setNotificationChannelAsync(PROGRESS_CHANNEL, {
+      name: "진행 중",
+      importance: Notifications.AndroidImportance.LOW,
+      sound: null,
+      enableVibrate: false,
     });
     const perm = await Notifications.requestPermissionsAsync();
     if (!perm.granted) return;

@@ -16,11 +16,28 @@ pub struct RunMeta {
 #[derive(Clone)]
 pub struct RunRegistry {
     inner: Arc<Mutex<HashMap<String, RunMeta>>>,
+    /// run 별 WS 연결 수 — 폰이 스트림을 보고 있으면 진행 푸시를 보내지 않으려고
+    attached: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl RunRegistry {
     pub fn new() -> RunRegistry {
-        RunRegistry { inner: Arc::new(Mutex::new(HashMap::new())) }
+        RunRegistry { inner: Arc::new(Mutex::new(HashMap::new())), attached: Arc::new(Mutex::new(HashMap::new())) }
+    }
+    pub fn attach(&self, run_id: &str) {
+        *self.attached.lock().unwrap().entry(run_id.to_string()).or_insert(0) += 1;
+    }
+    pub fn detach(&self, run_id: &str) {
+        let mut g = self.attached.lock().unwrap();
+        if let Some(n) = g.get_mut(run_id) {
+            *n -= 1;
+            if *n == 0 {
+                g.remove(run_id);
+            }
+        }
+    }
+    pub fn is_attached(&self, run_id: &str) -> bool {
+        self.attached.lock().unwrap().contains_key(run_id)
     }
     pub fn insert(&self, run_id: &str, meta: RunMeta) {
         self.inner.lock().unwrap().insert(run_id.to_string(), meta);
