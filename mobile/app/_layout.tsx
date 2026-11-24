@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useColorScheme } from "react-native";
-import { Stack, router } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -38,11 +38,14 @@ async function registerPush(pc: PC): Promise<void> {
       enableVibrate: false,
     });
     const perm = await Notifications.requestPermissionsAsync();
-    if (!perm.granted) return;
+    if (!perm.granted) {
+      console.warn("[push] permission not granted:", perm.status);
+      return;
+    }
     const expoToken = await Notifications.getExpoPushTokenAsync();
     await makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data);
-  } catch {
-    // ignore
+  } catch (e) {
+    console.warn("[push] register failed:", e);
   }
 }
 
@@ -66,14 +69,22 @@ async function openFromNotification(data: Record<string, unknown> | undefined): 
 }
 
 export default function RootLayout() {
+  const pathname = usePathname();
+  const pushTried = useRef(false);
+  // 첫 실행엔 PC 가 없어 등록을 건너뛰므로, 페어링 후 화면이 바뀔 때 다시 본다(전엔 다음 앱 시작까지 미등록)
   useEffect(() => {
+    if (pushTried.current) return;
     loadPCs().then((pcs) => {
-      if (pcs.length === 0) {
-        router.replace("/pair");
-        return;
-      }
+      if (pcs.length === 0 || pushTried.current) return;
+      pushTried.current = true;
       // Best-effort: register push for the first PC only (v1 simplification).
       registerPush(pcs[0]);
+    });
+  }, [pathname]);
+
+  useEffect(() => {
+    loadPCs().then((pcs) => {
+      if (pcs.length === 0) router.replace("/pair");
     });
     // 앱이 떠 있거나 백그라운드일 때 알림 탭
     const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
