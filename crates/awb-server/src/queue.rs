@@ -15,6 +15,8 @@ pub struct QueuedTurn {
     pub model: Option<String>,
     /// effort 오버라이드(없으면 기본)
     pub effort: Option<String>,
+    /// 앱 "+ 새 대화" 첫 전송 — 실행 시점에도 저장 세션을 잇지 않는다
+    pub new_session: bool,
 }
 
 #[derive(Clone, Default)]
@@ -49,7 +51,7 @@ pub fn spawn_drain(st: crate::routes::AppState, project: String, workdir: String
     tokio::spawn(async move {
         for _ in 0..120 {
             let Some(t) = st.queue.pop(&project) else { return };
-            let (resume, fork_of) = crate::routes::resolve_resume(&st, &project, t.resume_session_id.clone());
+            let (resume, fork_of) = crate::routes::resolve_resume(&st, &project, t.resume_session_id.clone(), t.new_session);
             let mcp_cfg = crate::routes::approval_mcp_cfg_for(&st, &project, &t.mode);
             match awb_core::runner::start_stream_run(
                 &st.claude_bin, &workdir, &st.settings_path, t.plan, &t.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), t.model.as_deref(), t.effort.as_deref(), &t.mode,
@@ -78,8 +80,8 @@ mod tests {
     #[test]
     fn fifo_with_push_front_recovery() {
         let q = TurnQueue::new();
-        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "a".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None }), 1);
-        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "b".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None }), 2);
+        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "a".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None, new_session: false }), 1);
+        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "b".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None, new_session: false }), 2);
         let a = q.pop("p").unwrap();
         assert_eq!(a.prompt, "a");
         q.push_front("p", a); // 실행 실패 → 순서 보존 복귀

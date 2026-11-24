@@ -119,7 +119,7 @@ export default function Sessions() {
   function handleNewChat() {
     router.push({
       pathname: "/chat/[project]",
-      params: { pc: pcId, project, path },
+      params: { pc: pcId, project, path, fresh: "1" },
     });
   }
 

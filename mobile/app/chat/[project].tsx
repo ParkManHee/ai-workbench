@@ -94,12 +94,15 @@ export default function Chat() {
     }),
     [t]
   );
-  const { project, pc: pcId, path, session } = useLocalSearchParams<{
+  const { project, pc: pcId, path, session, fresh } = useLocalSearchParams<{
     project: string;
     pc: string;
     path: string;
     session?: string;
+    fresh?: string;
   }>();
+  // "+ 새 대화" 로 열었으면 첫 전송만 새 세션 요청 — 없으면 서버가 저장된 마지막 세션을 잇는다
+  const newSessionRef = useRef(fresh === "1");
   // 실제로 이어 쓰는 세션 — 터미널에 열린 세션을 고르면 서버가 갈라(fork) 새 ID 로 쓰고 done 으로 알려준다
   const sidRef = useRef<string | undefined>(session);
   const [sid, setSid] = useState<string | undefined>(session);
@@ -683,7 +686,8 @@ export default function Chat() {
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined);
+      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined, newSessionRef.current);
+      newSessionRef.current = false;
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({

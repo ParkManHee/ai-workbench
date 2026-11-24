@@ -168,7 +168,7 @@ const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "auto", "bypassPe
 pub(crate) fn default_mode() -> String { "auto".into() }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String>, #[serde(default)] pub new_session: bool }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -178,28 +178,30 @@ pub struct ChatResult {
     pub position: Option<usize>,
 }
 
-pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>) -> (Option<String>, Option<String>) {
-    crate::sessions::decide_resume(want, st.sessions.get(project), st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
+/// new_session 이면 저장된 마지막 세션을 쓰지 않는다 — 앱 "+ 새 대화" 의 첫 전송이 이전 대화를 잇던 것
+pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>, new_session: bool) -> (Option<String>, Option<String>) {
+    let stored = if new_session { None } else { st.sessions.get(project) };
+    crate::sessions::decide_resume(want, stored, st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
 }
 
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
-    // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
+    // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용(new_session 이면 resume 없이 새로)
     // claude CLI가 받는 값만 통과 — 틀린 값을 조용히 무시하지 않고 거부한다
     if let Some(e) = b.effort.as_deref() {
         if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
     }
     if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
-    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone());
+    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone(), b.new_session);
     let mcp_cfg = approval_mcp_cfg_for(&st, &project, &b.mode);
     let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref(), &b.mode) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), mode: b.mode.clone(), model: b.model.clone(), effort: b.effort.clone(),
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), mode: b.mode.clone(), model: b.model.clone(), effort: b.effort.clone(), new_session: b.new_session,
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }
@@ -743,6 +745,15 @@ mod tests {
         let res = other.await.unwrap().unwrap();
         assert_eq!(res.0["allow"], false);
         assert_eq!(res.0["message"], "쓰지 마");
+    }
+
+    #[test]
+    fn new_session_ignores_stored_session() {
+        let devices_path = tmp("awb_routes_devices_newsess.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.sessions.record("newsess_demo", "old-sid", None);
+        assert_eq!(resolve_resume(&state, "newsess_demo", None, true), (None, None));
+        assert_eq!(resolve_resume(&state, "newsess_demo", None, false).0.as_deref(), Some("old-sid"));
     }
 
     #[tokio::test]
