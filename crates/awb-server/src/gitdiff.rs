@@ -155,9 +155,23 @@ pub fn draft_input(workdir: &str) -> Option<String> {
     Some(format!("{stat}\n{body}"))
 }
 
+/// haiku 가 프롬프트를 어기고 마크다운을 섞어도 커밋 메시지 칸에는 평문 한 줄만 들어가게 한다.
+pub fn clean_draft(out: &str) -> String {
+    out.lines()
+        .map(|l| l.replace('`', "").trim().trim_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’')).trim().to_string())
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_draft_strips_markdown_quotes_and_extra_lines() {
+        assert_eq!(clean_draft("```\n\"`a.txt` 수정\"\n둘째 줄\n```"), "a.txt 수정");
+    }
+
     #[test]
     fn file_diff_shows_changes_and_blocks_traversal() {
         let wd = std::env::temp_dir().join("awb_filediff_wd"); let _ = std::fs::remove_dir_all(&wd);

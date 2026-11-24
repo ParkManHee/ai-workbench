@@ -129,14 +129,14 @@ pub async fn git_draft_handler(State(st): State<AppState>, Path(project): Path<S
         .await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut message = String::new();
     if let Some(input) = input {
-        let prompt = format!("아래 git 변경을 한국어 한 줄 커밋 메시지로 요약해라. 메시지 한 줄만 출력한다.\n\n{input}");
+        let prompt = format!("아래 git 변경을 한국어 한 줄 커밋 메시지로 요약해라. 마크다운·백틱 없이 평문 한 줄만 출력한다.\n\n{input}");
         // 프로젝트 맥락·도구 없이 요약만 — 임시 디렉터리에서, 세션도 남기지 않는다
         let fut = tokio::process::Command::new(&st.claude_bin)
             .args(["-p", &prompt, "--model", "haiku", "--tools", "", "--no-session-persistence"])
             .current_dir(std::env::temp_dir()).kill_on_drop(true).output();
         if let Ok(Ok(o)) = tokio::time::timeout(std::time::Duration::from_secs(60), fut).await {
             if o.status.success() {
-                message = String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string();
+                message = crate::gitdiff::clean_draft(&String::from_utf8_lossy(&o.stdout));
             }
         }
     }
