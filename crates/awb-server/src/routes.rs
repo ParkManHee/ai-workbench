@@ -457,11 +457,29 @@ pub async fn resume_delete_handler(State(st): State<AppState>, Path(project): Pa
     if st.resume.remove(&project) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
-pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
+#[derive(serde::Deserialize)]
+pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived: u8 }
+
+pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>, Query(sq): Query<SessionsQuery>) -> Result<Json<Vec<crate::sessions::SessionRow>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
     // 종료된 터미널 세션은 숨긴다 — 열린 터미널 세션과 앱이 이어 쓰는 대화만
     let list = awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path));
-    Ok(Json(list.into_iter().filter(|s| s.live || s.app).collect()))
+    let list = list.into_iter().filter(|s| s.live || s.app).collect();
+    Ok(Json(crate::sessions::filter_rows(list, &st.sessions.metas(&project), sq.q.as_deref(), sq.archived == 1)))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SessionMetaBody {
+    #[serde(default, deserialize_with = "crate::sessions::present")]
+    pub name: Option<Option<String>>,
+    pub archived: Option<bool>,
+}
+
+/// 세션 이름·보관 — 데몬 메타 파일에만 쓰고 트랜스크립트는 건드리지 않는다.
+pub async fn session_meta_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Json(b): Json<SessionMetaBody>) -> Result<Json<crate::sessions::SessionMeta>, StatusCode> {
+    if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    st.sessions.set_meta(&project, &session_id, b.name, b.archived).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(serde::Deserialize)]
@@ -557,6 +575,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/push/register", post(push_register_handler))
         .route("/sessions/{project}", get(sessions_handler))
         .route("/sessions/{project}/{session_id}/end", post(session_end_handler))
+        .route("/sessions/{project}/{session_id}/meta", post(session_meta_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
         .route("/resume-at-reset/{project}", get(resume_get_handler).post(resume_set_handler).delete(resume_delete_handler))

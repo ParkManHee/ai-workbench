@@ -70,7 +70,13 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       if (!(res as any).ok) throw new HttpError((res as any).status, p);
     },
     cancelResumeAtReset: (project: string) => f(`${baseUrl}/resume-at-reset/${encodeURIComponent(project)}`, { method: "DELETE", headers: h } as any),
-    sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
+    sessions: (project: string, opts: { q?: string; archived?: boolean } = {}): Promise<SessionInfo[]> => {
+      const qs = [opts.q ? `q=${encodeURIComponent(opts.q)}` : "", opts.archived ? "archived=1" : ""].filter(Boolean).join("&");
+      return jget(`/sessions/${encodeURIComponent(project)}${qs ? `?${qs}` : ""}`);
+    },
+    /** name: null·빈 문자열이면 이름 제거, 키를 빼면 그대로 */
+    sessionMeta: (project: string, sessionId: string, body: { name?: string | null; archived?: boolean }): Promise<{ name?: string; archived?: boolean }> =>
+      jpost(`/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/meta`, body),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
     transcriptTail: (project: string, sessionId: string): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>

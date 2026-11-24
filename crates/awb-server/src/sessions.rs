@@ -1,5 +1,9 @@
+use awb_core::transcript::SessionInfo;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
+use std::sync::Mutex;
 
 pub fn parse_session_id(line: &str) -> Option<String> {
     let v: Value = serde_json::from_str(line).ok()?;
@@ -39,6 +43,69 @@ impl SessionStore {
         let v = serde_json::json!({ "session_id": sid, "forked_from": origin });
         let _ = fs::write(self.path(project), v.to_string());
     }
+    // path() 가 '.' 을 '_' 로 바꾸므로 `<proj>.meta.json` 은 어떤 프로젝트의 세션 파일과도 겹치지 않는다.
+    fn meta_path(&self, project: &str) -> String { format!("{}.meta.json", self.path(project).trim_end_matches(".json")) }
+    pub fn metas(&self, project: &str) -> HashMap<String, SessionMeta> {
+        fs::read_to_string(self.meta_path(project)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    /// name: None=그대로, Some(None)·공백뿐=이름 제거. archived: None=그대로.
+    pub fn set_meta(&self, project: &str, sid: &str, name: Option<Option<String>>, archived: Option<bool>) -> std::io::Result<SessionMeta> {
+        // 읽고-고쳐-쓰기 사이에 다른 요청이 끼면 한쪽 변경이 사라진다
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = self.metas(project);
+        let mut m = all.remove(sid).unwrap_or_default();
+        if let Some(n) = name {
+            m.name = n.map(|s| s.trim().chars().take(NAME_MAX).collect::<String>().trim_end().to_string()).filter(|s| !s.is_empty());
+        }
+        if let Some(a) = archived { m.archived = a; }
+        if m != SessionMeta::default() { all.insert(sid.to_string(), m.clone()); }
+        // 원자적 교체(temp+rename) — 쓰기 중 크래시로 전 세션의 이름·보관이 날아가지 않게
+        let path = self.meta_path(project);
+        let tmp = format!("{path}.tmp");
+        fs::write(&tmp, serde_json::to_string(&all)?)?;
+        fs::rename(&tmp, &path)?;
+        Ok(m)
+    }
+}
+
+pub const NAME_MAX: usize = 80;
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+pub struct SessionMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+}
+
+/// `"name": null`(제거)과 키 없음(그대로)을 가르기 위해 — 기본 Option 은 둘 다 None 으로 읽는다.
+pub fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
+#[derive(Serialize)]
+pub struct SessionRow {
+    #[serde(flatten)]
+    pub info: SessionInfo,
+    pub name: Option<String>,
+    pub archived: bool,
+}
+
+/// 메타를 붙이고 보관(기본 제외 / archived=true 면 보관만)·검색어로 거른다.
+/// 검색은 이름·질문/답 미리보기만 본다 — 원문 전문 검색은 하지 않는다.
+pub fn filter_rows(list: Vec<SessionInfo>, metas: &HashMap<String, SessionMeta>, q: Option<&str>, archived: bool) -> Vec<SessionRow> {
+    let q = q.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+    list.into_iter().filter_map(|info| {
+        let m = metas.get(&info.session_id).cloned().unwrap_or_default();
+        if m.archived != archived { return None; }
+        if let Some(q) = &q {
+            let hit = [m.name.as_deref().unwrap_or(""), info.preview.as_str(), info.answer_preview.as_str()]
+                .iter().any(|f| f.to_lowercase().contains(q.as_str()));
+            if !hit { return None; }
+        }
+        Some(SessionRow { info, name: m.name, archived: m.archived })
+    }).collect()
 }
 
 /// 이어갈 세션과 fork 원본. 터미널에 열린 세션을 그대로 --resume 하면 두 프로세스가 한 대화 파일에 번갈아 써서
@@ -92,6 +159,48 @@ mod tests {
         assert_eq!(s.get("proj"), None);
         s.record("proj", "sid-9", None);
         assert_eq!(s.get("proj"), Some("sid-9".to_string()));
+    }
+
+    #[test]
+    fn session_meta_roundtrip_and_name_normalized() {
+        let d = std::env::temp_dir().join("awb_session_meta_test"); let _ = std::fs::remove_dir_all(&d);
+        let s = SessionStore::load(d.to_str().unwrap());
+        s.record("proj", "sid-9", None);
+        let some = |x: &str| Some(Some(x.to_string()));
+        s.set_meta("proj", "a", some("  배포 수정  "), None).unwrap();
+        s.set_meta("proj", "b", some(&"가".repeat(90)), Some(true)).unwrap();
+        let m = SessionStore::load(d.to_str().unwrap()).metas("proj");
+        assert_eq!(m["a"], SessionMeta { name: Some("배포 수정".into()), archived: false });
+        assert_eq!(m["b"].name.as_deref().map(|n| n.chars().count()), Some(NAME_MAX));
+        assert!(m["b"].archived);
+        // 보관만 바꾸면 이름은 그대로, 공백뿐·null 은 이름 제거
+        s.set_meta("proj", "a", None, Some(true)).unwrap();
+        assert_eq!(s.metas("proj")["a"].name.as_deref(), Some("배포 수정"));
+        s.set_meta("proj", "a", some("   "), None).unwrap();
+        assert_eq!(s.metas("proj")["a"].name, None);
+        s.set_meta("proj", "b", Some(None), Some(false)).unwrap();
+        assert!(!s.metas("proj").contains_key("b"));
+        // 같은 디렉터리의 세션 파일을 덮지 않는다
+        assert_eq!(s.get("proj"), Some("sid-9".to_string()));
+    }
+
+    #[test]
+    fn filter_rows_searches_name_and_previews_and_hides_archived() {
+        let info = |sid: &str, preview: &str, answer: &str| SessionInfo {
+            session_id: sid.into(), updated: 0, preview: preview.into(), answer_preview: answer.into(),
+            count: 1, active: false, waiting: false, live: false, app: true,
+        };
+        let list = || vec![info("a", "질문", "답"), info("b", "Rust 빌드 오류", ""), info("c", "x", "Deploy 끝"), info("z", "Deploy 보관", "")];
+        let metas: HashMap<String, SessionMeta> = [
+            ("a".to_string(), SessionMeta { name: Some("Deploy Fix".into()), archived: false }),
+            ("z".to_string(), SessionMeta { name: None, archived: true }),
+        ].into();
+        let ids = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.info.session_id).collect::<Vec<_>>();
+        assert_eq!(ids(filter_rows(list(), &metas, None, false)), ["a", "b", "c"]);
+        assert_eq!(ids(filter_rows(list(), &metas, None, true)), ["z"]);
+        // 대소문자 무시: 이름(a)·답 미리보기(c) 에 걸리고 보관(z)은 빠진다
+        assert_eq!(ids(filter_rows(list(), &metas, Some(" dEPLOY "), false)), ["a", "c"]);
+        assert_eq!(ids(filter_rows(list(), &metas, Some("rust"), false)), ["b"]);
     }
 
     #[test]
