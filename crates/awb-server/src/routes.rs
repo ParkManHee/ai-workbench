@@ -313,11 +313,11 @@ pub async fn permission_answer_handler(State(st): State<AppState>, Json(b): Json
 
 /// 프로젝트의 활성 run 조회 — 폰이 재진입/타 기기에서 진행 중 실행에 attach(취소·대기표시)할 수 있게.
 /// 활성 run이 없으면 200 + {run_id: null} ("없음"은 정상 상태라 404가 아님).
+/// session·forked_from: 백그라운드에서 끝난 실행은 앱이 done(새 session_id)을 못 받는다 — 갈라진 세션을 여기서 찾는다
 pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
-    match st.runs.active_for_project(&project) {
-        Some((run_id, _)) => Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project) })),
-        None => Json(serde_json::json!({ "run_id": null, "queued": st.queue.len(&project) })),
-    }
+    let run_id = st.runs.active_for_project(&project).map(|(id, _)| id);
+    Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project),
+        "session": st.sessions.get(&project), "forked_from": st.sessions.forked_from(&project) }))
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -754,6 +754,17 @@ mod tests {
         state.sessions.record("newsess_demo", "old-sid", None);
         assert_eq!(resolve_resume(&state, "newsess_demo", None, true), (None, None));
         assert_eq!(resolve_resume(&state, "newsess_demo", None, false).0.as_deref(), Some("old-sid"));
+    }
+
+    #[tokio::test]
+    async fn active_run_reports_forked_session() {
+        let devices_path = tmp("awb_routes_devices_activefork.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.sessions.record("activefork_demo", "fork-sid", Some("term-sid"));
+        let res = active_run_handler(State(state), Path("activefork_demo".into())).await;
+        assert_eq!(res.0["run_id"], serde_json::Value::Null);
+        assert_eq!(res.0["session"], "fork-sid");
+        assert_eq!(res.0["forked_from"], "term-sid");
     }
 
     #[tokio::test]

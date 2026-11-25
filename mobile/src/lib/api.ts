@@ -50,7 +50,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     gitPr: (project: string, title: string, body?: string): Promise<{ output: string }> =>
       jpost(`/git/${encodeURIComponent(project)}/pr`, { title, body: body ?? "" }),
     status: (runId: string) => jget(`/status/${runId}`),
-    activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
+    activeRun: (project: string): Promise<{ run_id: string | null; queued: number; session?: string | null; forked_from?: string | null }> =>
       jget(`/runs/active/${encodeURIComponent(project)}`),
     permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
       jget(`/permission/pending/${encodeURIComponent(project)}`),

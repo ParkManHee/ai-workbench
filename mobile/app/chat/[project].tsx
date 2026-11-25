@@ -152,6 +152,8 @@ export default function Chat() {
   const sendingRef = useRef(false);
   // 프리셋 칩은 입력칸 포커스 중에만 — 상시 노출하면 대화창을 가린다
   const [inputFocused, setInputFocused] = useState(false);
+  // 대화창을 누르거나 끌면 입력칸만 남기고 접는다 — 컨트롤·프리셋·이어받기는 입력칸을 눌러야 편다
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
   const [images, setImages] = useState<{ uri: string; ext: string; base64: string }[]>([]);
@@ -227,7 +229,13 @@ export default function Chat() {
         if (!p || doneRef.current) return;
         let runId = runIdRef.current;
         try {
-          runId = (await makeClient(p.baseUrl, p.token).activeRun(project)).run_id ?? null;
+          const ar = await makeClient(p.baseUrl, p.token).activeRun(project);
+          runId = ar.run_id ?? null;
+          // 백그라운드 중 끝난 fork 실행은 done 을 못 받았다 — 서버가 기록한 갈라진 세션으로 옮긴다
+          if (!runId && ar.session && ar.forked_from === sidRef.current) {
+            sidRef.current = ar.session;
+            setSid(ar.session);
+          }
         } catch {
           // 조회 실패 시 기억한 run 으로 시도 — 끝났으면 unknown run → 기존 스트림 포기 경로가 기록으로 전환
         }
@@ -791,7 +799,7 @@ export default function Chat() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
-      {sid && path ? (
+      {sid && path && controlsOpen ? (
         <View style={styles.resumeBar}>
           <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
           <Text style={styles.resumeCmd} selectable>
@@ -847,6 +855,7 @@ export default function Chat() {
         style={styles.list}
         contentContainerStyle={[styles.listContent, kbPad > 0 ? { paddingBottom: kbPad + 12 } : null]}
         scrollEventThrottle={100}
+        onTouchStart={() => setControlsOpen(false)}
         onScroll={(e) => {
           const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
           scrollYRef.current = contentOffset.y;
@@ -1050,7 +1059,7 @@ export default function Chat() {
           );
         })()}
         {/* 프리셋: 입력이 비어 있을 때만 — 탭하면 입력창에 채워져 수정 후 전송 */}
-        {inputFocused && !prompt && !chat.running && images.length === 0 ? (
+        {controlsOpen && inputFocused && !prompt && !chat.running && images.length === 0 ? (
           <View style={styles.optionRow}>
             {PROMPT_PRESETS.map((p, i) => (
               <Pressable key={i} style={styles.presetChip} onPress={() => setPrompt(p)}>
@@ -1079,7 +1088,10 @@ export default function Chat() {
         ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
           {/* 컨트롤과 입력칸을 두 줄로 — 한 줄이면 컨트롤이 늘 때 입력칸 폭이 0 이 되고 전송 버튼이 화면 밖으로 밀린다 */}
+          {controlsOpen || running ? (
           <View style={styles.controlRow}>
+          {controlsOpen ? (
+          <>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch
@@ -1114,6 +1126,8 @@ export default function Chat() {
         <Pressable style={styles.attachButton} onPress={toggleMic}>
           <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
+          </>
+          ) : null}
         {/* 취소는 컨트롤 줄에 — 입력 줄에 끼우면 전송 버튼이 밀려 그 자리에 취소가 와 오터치된다 */}
         {running ? (
           <Pressable style={styles.cancelButton} onPress={handleCancel}>
@@ -1121,13 +1135,15 @@ export default function Chat() {
           </Pressable>
         ) : null}
           </View>
+          ) : null}
           <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
           multiline
           value={prompt}
           onChangeText={setPrompt}
-          onFocus={() => setInputFocused(true)}
+          onFocus={() => { setInputFocused(true); setControlsOpen(true); }}
+          onPressIn={() => setControlsOpen(true)}
           onBlur={() => setInputFocused(false)}
           editable={!uploading}
           placeholder="메시지를 입력하세요"
