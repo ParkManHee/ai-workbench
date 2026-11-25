@@ -211,6 +211,12 @@ export default function Projects() {
           <View style={styles.childBody}>
             <Text style={styles.childTitle} numberOfLines={1}>{s.name || s.preview || "(빈 대화)"}</Text>
             <View style={styles.childMeta}>
+              {s.worktree && !s.worktree.removed ? (
+                <>
+                  <Icon name="call-split" size={14} color={t.accent} />
+                  <Text style={styles.childTag}>격리 · </Text>
+                </>
+              ) : null}
               {s.live ? <Icon name="terminal" size={14} color={t.accent} /> : null}
               <Text style={styles.childMetaText} numberOfLines={1}>
                 {s.live ? "PC 터미널 · " : ""}{formatUpdated(s.updated)}
@@ -340,6 +346,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.xs,
+  },
+  childTag: {
+    fontSize: font.size.xs,
+    fontWeight: font.weight.bold,
+    color: t.accent,
   },
   childMetaText: {
     flexShrink: 1,

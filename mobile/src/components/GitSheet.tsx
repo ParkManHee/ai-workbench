@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, Platform, StyleSheet, Text, TextInput, ToastA
 import { makeClient } from "../lib/api";
 import type { PC } from "../lib/types";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../lib/theme";
-import { Button, SheetFrame } from "./ui";
+import { Button, Icon, SheetFrame } from "./ui";
 
 function toast(msg: string) {
   if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.LONG);
@@ -11,11 +11,13 @@ function toast(msg: string) {
 }
 
 // 커밋 → 푸시 → PR 을 데몬이 직접 한다. 커밋 대상은 작업트리 전체(add -A) — 무엇이 들어가는지는 diff 영역에서 먼저 본다.
-export function GitSheet({ pc, project, session, visible, onClose, onCommitted }: {
+export function GitSheet({ pc, project, session, branch: wtBranch, visible, onClose, onCommitted }: {
   pc: PC;
   project: string;
   /** 지금 대화 — 격리 세션이면 데몬이 그 트리에서 커밋·푸시·PR 한다 */
   session?: string;
+  /** 격리 세션의 브랜치 — 어느 브랜치에 커밋되는지 머리에 보인다 */
+  branch?: string;
   visible: boolean;
   onClose: () => void;
   onCommitted: () => void;
@@ -59,6 +61,12 @@ export function GitSheet({ pc, project, session, visible, onClose, onCommitted }
   const c = makeClient(pc.baseUrl, pc.token);
   return (
     <SheetFrame visible={visible} title="커밋 · 푸시 · PR" variant="dialog" onClose={onClose}>
+      {wtBranch ? (
+        <View style={styles.wt} accessible accessibilityLabel={`격리 트리, 브랜치 ${wtBranch}`}>
+          <Icon name="call-split" size={16} color={t.accent} />
+          <Text style={styles.wtText} numberOfLines={1} ellipsizeMode="middle">격리 · {wtBranch}</Text>
+        </View>
+      ) : null}
       <TextInput style={[styles.input, styles.message]} textBreakStrategy="balanced" value={message} onChangeText={setMessage} placeholder="커밋 메시지" placeholderTextColor={t.placeholder} multiline editable={step === 0} />
       {onDefault && step === 0 ? (
         <TextInput style={[styles.input, styles.branch]} value={branch} onChangeText={setBranch} placeholder="새 브랜치 이름 (기본 브랜치에는 바로 커밋 안 함)" placeholderTextColor={t.placeholder} autoCapitalize="none" autoCorrect={false} />
@@ -89,6 +97,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     color: t.text,
     fontSize: font.size.md,
   },
+  wt: { flexDirection: "row", alignItems: "center", gap: space.xs, marginTop: -space.sm },
+  wtText: { flex: 1, fontSize: font.size.sm, color: t.accent, fontWeight: font.weight.bold },
   message: { maxHeight: 160, textAlignVertical: "top" },
   // 안내 문구가 길어 16 이면 두 줄로 넘어가 잘린다
   branch: { height: TOUCH, paddingVertical: 0, fontSize: font.size.sm },

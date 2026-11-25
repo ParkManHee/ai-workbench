@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { HttpError, makeClient } from "../lib/api";
+import { DAYS, nextLabel } from "../lib/schedule";
 import type { PC, Schedule } from "../lib/types";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../lib/theme";
 import { Button, Chip, Icon, ListRow, SheetFrame } from "./ui";
 
-const DAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const MODES: [string, string][] = [["default", "감독"], ["acceptEdits", "편집 자동"], ["auto", "자동"], ["bypassPermissions", "전체"]];
 const modeLabel = (m: string) => MODES.find(([k]) => k === m)?.[1] ?? m;
 
@@ -14,11 +14,6 @@ function daysLabel(days: number[]): string {
   if (days.join() === "1,2,3,4,5") return "평일";
   if (days.join() === "0,6") return "주말";
   return days.map((d) => DAYS[d]).join("·");
-}
-
-function nextLabel(epoch: number): string {
-  const d = new Date(epoch * 1000);
-  return `${DAYS[d.getDay()]} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** 세션 화면 「예약」 칸 — 요일·시각마다 새 대화로 프롬프트를 실행한다. 옛 데몬(엔드포인트 없음)이면 그리지 않는다 */
@@ -75,6 +70,15 @@ export function ScheduleSection({ pc, project }: { pc: PC; project: string }) {
     await load();
   }
 
+  // 닫으면(뒤로·바깥·취소) 쓰던 폼을 버린다 — 다음 「예약 추가」 는 빈 폼에서 시작
+  function resetForm() {
+    setDays([1, 2, 3, 4, 5]);
+    setTime("09:00");
+    setPrompt("");
+    setMode("auto");
+    setError(null);
+  }
+
   const validTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(time.trim());
 
   return (
@@ -89,7 +93,7 @@ export function ScheduleSection({ pc, project }: { pc: PC; project: string }) {
         visible={!!view}
         title={view === "form" ? "예약 추가" : "예약 실행"}
         variant={view === "form" ? "dialog" : "bottom"}
-        onClose={() => setView(null)}
+        onClose={() => { resetForm(); setView(null); }}
       >
         {view === "list" ? (
           <>
@@ -147,7 +151,7 @@ export function ScheduleSection({ pc, project }: { pc: PC; project: string }) {
             </View>
             {error ? <Text style={styles.error}>{error}</Text> : null}
             <View style={styles.buttons}>
-              <Button title="취소" variant="secondary" onPress={() => setView("list")} style={styles.button} />
+              <Button title="취소" variant="secondary" onPress={() => { resetForm(); setView("list"); }} style={styles.button} />
               <Button
                 title="저장"
                 onPress={save}

@@ -1219,7 +1219,10 @@ export default function Chat() {
           <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
           <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
           {canIsolate ? (
-            <Chip icon="call-split" label={isolate ? "격리 켬" : "격리"} selected={isolate} onPress={() => setIsolate((v) => !v)} />
+            // 라벨·굵기를 고정해 켬·끔의 폭이 같다 — 눌러도 다음 칩이 줄을 바꾸지 않게. 켬은 아이콘·색으로만
+            <Chip icon={isolate ? "check" : "call-split"} selected={isolate} onPress={() => setIsolate((v) => !v)}>
+              <Text style={[styles.chipText, { color: isolate ? t.accent : t.text }]} numberOfLines={1}>격리</Text>
+            </Chip>
           ) : null}
           <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
             <Text style={styles.chipText}>
@@ -1275,7 +1278,7 @@ export default function Chat() {
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
-      <GitSheet pc={pc} project={project} session={sid} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
+      <GitSheet pc={pc} project={project} session={sid} branch={wt?.branch} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
       <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );
