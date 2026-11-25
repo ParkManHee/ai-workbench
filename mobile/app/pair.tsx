@@ -7,7 +7,7 @@ import { makeClient, pairUrl } from "../src/lib/api";
 import { pcId } from "../src/lib/pcs-util";
 import { addPC } from "../src/store/pcs";
 import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
-import { Button, Icon, SheetFrame } from "../src/components/ui";
+import { Button, Icon, keepWords, SheetFrame } from "../src/components/ui";
 
 /** 스캔·손입력이 함께 타는 페어링 — 실패하면 원인 문구, 성공하면 null. again: 그 경로에서 다시 하는 법 */
 async function pairWithPc(parsed: { baseUrl: string; code: string }, again: string): Promise<string | null> {
@@ -112,7 +112,7 @@ export default function Pair() {
         style={[styles.input, fieldError === "addr" ? { borderColor: t.danger } : null]}
         value={addr}
         onChangeText={changeAddr}
-        placeholder="100.119.50.46:8787"
+        placeholder="예: 100.119.50.46:8787"
         placeholderTextColor={t.placeholder}
         accessibilityLabel="PC 주소"
         autoCapitalize="none"
@@ -140,7 +140,7 @@ export default function Pair() {
       {manualError ? (
         <View style={styles.manualError} accessibilityLiveRegion="polite">
           <Icon name="error-outline" size={20} color={t.danger} />
-          <Text style={styles.manualErrorText}>{manualError}</Text>
+          <Text style={styles.manualErrorText}>{keepWords(manualError)}</Text>
         </View>
       ) : null}
       <Button title="페어링" icon="link" loading={pairing} onPress={submitManual} style={styles.submit} />
@@ -160,7 +160,7 @@ export default function Pair() {
     return (
       <View style={[styles.container, styles.permission]}>
         <Icon name="photo-camera" size={40} color={t.subtext} />
-        <Text style={styles.text}>페어링 QR 코드를 스캔하려면 카메라 권한이 필요합니다.</Text>
+        <Text style={styles.text}>{keepWords("페어링 QR 코드를 스캔하려면 카메라 권한이 필요합니다.")}</Text>
         <Button title="권한 허용" onPress={requestPermission} />
         {manualButton}
         {manualSheet}
@@ -189,7 +189,7 @@ export default function Pair() {
         <View style={styles.overlay} accessibilityLiveRegion="polite">
           <View style={styles.overlayRow}>
             <Icon name="error-outline" size={20} color={media.fg} />
-            <Text style={styles.overlayText}>{error}</Text>
+            <Text style={styles.overlayText}>{keepWords(error)}</Text>
           </View>
           <Button title="다시 스캔" icon="qr-code-scanner" onPress={rescan} />
           {manualButton}
