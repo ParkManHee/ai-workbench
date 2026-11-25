@@ -54,6 +54,7 @@ export default function Sessions() {
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [showPast, setShowPast] = useState(false);
   const [renaming, setRenaming] = useState<SessionInfo | null>(null);
   const [nameDraft, setNameDraft] = useState("");
 
@@ -157,6 +158,13 @@ export default function Sessions() {
     }
   }
 
+  // 끝난 앱 대화가 쌓여 활성 세션이 묻히지 않게 — 검색·보관함은 찾는 중이라 접지 않는다
+  const foldable = !q && !showArchived;
+  const isActive = (s: SessionInfo) => !!(s.live || s.active || s.waiting);
+  const activeRows = sessions.filter(isActive);
+  const pastRows = sessions.filter((s) => !isActive(s));
+  const visible = !foldable ? sessions : showPast ? [...activeRows, ...pastRows] : activeRows;
+
   async function saveMeta(item: SessionInfo, body: { name?: string | null; archived?: boolean }) {
     if (!pc) return;
     try {
@@ -235,13 +243,13 @@ export default function Sessions() {
         </View>
       ) : (
         <FlatList
-          data={sessions}
+          data={visible}
           keyExtractor={(item) => item.session_id}
           contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
           ListEmptyComponent={
             <View style={styles.center}>
-              <Text>No sessions found.</Text>
+              <Text>{pastRows.length > 0 && foldable ? "활성 세션 없음" : "No sessions found."}</Text>
             </View>
           }
           renderItem={({ item }) => (
@@ -261,9 +269,16 @@ export default function Sessions() {
             </Pressable>
           )}
           ListFooterComponent={
-            <Pressable style={styles.footer} onPress={() => setShowArchived((v) => !v)}>
-              <Text style={styles.footerText}>{showArchived ? "보관함 닫기" : "보관함 보기"}</Text>
-            </Pressable>
+            <>
+              {foldable && pastRows.length > 0 ? (
+                <Pressable style={styles.footer} onPress={() => setShowPast((v) => !v)}>
+                  <Text style={styles.footerText}>{showPast ? "지난 대화 접기" : `지난 대화 ${pastRows.length}개`}</Text>
+                </Pressable>
+              ) : null}
+              <Pressable style={styles.footer} onPress={() => setShowArchived((v) => !v)}>
+                <Text style={styles.footerText}>{showArchived ? "보관함 닫기" : "보관함 보기"}</Text>
+              </Pressable>
+            </>
           }
           extraData={ending}
         />
