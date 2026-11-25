@@ -39,6 +39,8 @@ pub struct AppState {
     pub rate_limit: Arc<Mutex<Option<crate::streamevt::RateLimit>>>,
     /// 한도 리셋 때 이어가기 예약
     pub resume: crate::resume::ResumeStore,
+    /// 요일·시각 반복 실행 예약
+    pub schedules: crate::schedule::ScheduleStore,
 }
 
 /// 폰↔데몬 프로토콜 버전 — 폰이 자신이 아는 버전과 비교해 업데이트 배너를 띄운다.
@@ -470,6 +472,38 @@ pub async fn resume_delete_handler(State(st): State<AppState>, Path(project): Pa
     if st.resume.remove(&project) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
+pub async fn schedules_list_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<Vec<crate::schedule::Schedule>> {
+    Json(st.schedules.list(&project))
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewSchedule { pub days: Vec<u8>, pub time: String, pub prompt: String, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
+
+/// 값 검증은 실행 시점 /chat 과 같은 기준으로 미리 한다 — 틀린 예약이 그 시각에 조용히 실패하지 않게.
+pub async fn schedule_add_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<NewSchedule>) -> Result<Json<crate::schedule::Schedule>, (StatusCode, String)> {
+    project_path(&st, &project)?;
+    let mut days = b.days;
+    days.sort_unstable();
+    days.dedup();
+    if days.is_empty() || days.iter().any(|d| *d > 6) { return Err((StatusCode::BAD_REQUEST, "days: 0(일)~6(토) 중 하나 이상".into())); }
+    if b.prompt.trim().is_empty() { return Err((StatusCode::BAD_REQUEST, "empty prompt".into())); }
+    if let Some(e) = b.effort.as_deref() {
+        if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
+    }
+    if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
+    let next_at = crate::schedule::next_local(&days, &b.time, crate::schedule::now())
+        .ok_or((StatusCode::BAD_REQUEST, format!("time: HH:MM 이어야 한다: {}", b.time)))?;
+    let s = crate::schedule::Schedule {
+        id: crate::pairing::random_token()[..12].to_string(), project, days, time: b.time, prompt: b.prompt, mode: b.mode, model: b.model, effort: b.effort, next_at,
+    };
+    st.schedules.add(s.clone());
+    Ok(Json(s))
+}
+
+pub async fn schedule_delete_handler(State(st): State<AppState>, Path((project, id)): Path<(String, String)>) -> StatusCode {
+    if st.schedules.remove(&project, &id) { StatusCode::OK } else { StatusCode::NOT_FOUND }
+}
+
 #[derive(serde::Deserialize)]
 pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived: u8 }
 
@@ -590,6 +624,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
         .route("/resume-at-reset/{project}", get(resume_get_handler).post(resume_set_handler).delete(resume_delete_handler))
+        .route("/schedules/{project}", get(schedules_list_handler).post(schedule_add_handler))
+        .route("/schedules/{project}/{id}", axum::routing::delete(schedule_delete_handler))
         .route("/git/{project}/commit", post(git_commit_handler))
         .route("/git/{project}/push", post(git_push_handler))
         .route("/git/{project}/pr", post(git_pr_handler))
@@ -636,6 +672,7 @@ mod tests {
             started_at: 0,
             rate_limit: Default::default(),
             resume: crate::resume::ResumeStore::load(&std::env::temp_dir().join("awb_routes_test_resume.json").to_string_lossy().to_string()),
+            schedules: crate::schedule::ScheduleStore::load(&std::env::temp_dir().join("awb_routes_test_schedules.json").to_string_lossy().to_string()),
         }
     }
 

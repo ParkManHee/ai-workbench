@@ -11,6 +11,7 @@ mod queue;
 mod resume;
 mod routes;
 mod runreg;
+mod schedule;
 mod sessions;
 mod streamevt;
 mod ws;
@@ -72,6 +73,7 @@ async fn serve() {
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
         rate_limit: Default::default(),
         resume: resume::ResumeStore::load(&format!("{}/.claude/.awb-resume-at-reset.json", std::env::var("HOME").unwrap_or_default())),
+        schedules: schedule::ScheduleStore::load(&format!("{}/.claude/.awb-schedules.json", std::env::var("HOME").unwrap_or_default())),
     };
     gc::spawn_gc(cfg.runs_dir.clone(), state.uploads_dir.clone());
     resume::spawn_scheduler(state.clone());

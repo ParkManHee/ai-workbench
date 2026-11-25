@@ -79,6 +79,7 @@ pub fn spawn_scheduler(st: crate::routes::AppState) {
             for (project, r) in st.resume.take_due(now()) {
                 fire(&st, project, r).await;
             }
+            crate::schedule::run_due(&st).await;
         }
     });
 }

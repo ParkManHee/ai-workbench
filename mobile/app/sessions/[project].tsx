@@ -15,6 +15,7 @@ import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HttpError, isUnauthorized, makeClient } from "../../src/lib/api";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
+import { ScheduleSection } from "../../src/components/ScheduleSection";
 import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
@@ -258,6 +259,7 @@ export default function Sessions() {
           keyExtractor={(item) => item.session_id}
           contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
           keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={foldable ? <ScheduleSection pc={pc} project={project} /> : null}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
           ListEmptyComponent={
             <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "세션이 없습니다."} />
