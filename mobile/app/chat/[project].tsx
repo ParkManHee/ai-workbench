@@ -801,12 +801,13 @@ export default function Chat() {
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
       {sid && path && controlsOpen ? (
-        <View style={styles.resumeBar}>
-          <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
-          <Text style={styles.resumeCmd} selectable>
-            {`cd ${path} && claude --resume ${sid}`}
-          </Text>
-        </View>
+        <Pressable style={styles.resumeBar} onLongPress={() => copyText(`cd ${path} && claude --resume ${sid}`)}>
+          <View style={styles.resumeTextCol}>
+            <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
+            <Text style={styles.resumeCmd}>{`cd ${path} && claude --resume ${sid}`}</Text>
+          </View>
+          <IconButton name="content-copy" label="이어받기 명령 복사" color={t.accent} onPress={() => copyText(`cd ${path} && claude --resume ${sid}`)} />
+        </Pressable>
       ) : null}
       {(() => {
         const withTodos = [...chat.messages].reverse().find((m) => m.todos && m.todos.length > 0);
@@ -1187,6 +1188,12 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
     backgroundColor: t.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  resumeTextCol: {
+    flex: 1,
     gap: 2,
   },
   resumeLabel: {
