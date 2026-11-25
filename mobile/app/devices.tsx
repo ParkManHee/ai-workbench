@@ -77,7 +77,7 @@ export default function Devices() {
         contentContainerStyle={{ flexGrow: 1 }}
         ListEmptyComponent={<EmptyState icon="devices" title="페어링된 기기가 없습니다." />}
         renderItem={({ item }) => (
-          <ListRow
+          <ListRow card
             title={`${item.label} #${item.id.slice(0, 4)}${item.id === pc?.deviceId ? " · 이 기기" : ""}`}
             subtitle={`${pairedAt(item.paired_at)} 페어링 · ${item.id}`}
             right={<Button title="회수" variant="dangerOutline" size="sm" onPress={() => confirmRevoke(item)} />}

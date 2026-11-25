@@ -282,7 +282,7 @@ export default function Sessions() {
             <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "세션이 없습니다."} />
           }
           renderItem={({ item }) => (
-            <ListRow
+            <ListRow card
               title={item.name || item.preview || "(빈 대화)"}
               onPress={() => handlePress(item)}
               onLongPress={() => handleLongPress(item)}
@@ -383,11 +383,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    marginHorizontal: space.lg,
+    marginHorizontal: space.md,
     marginBottom: space.sm,
     paddingHorizontal: space.md,
     height: TOUCH,
     borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.inputBorder,
     backgroundColor: t.surface,
   },
   searchInput: {

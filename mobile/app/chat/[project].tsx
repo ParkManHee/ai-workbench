@@ -29,7 +29,7 @@ import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMs
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
-import { Button, Chip, Icon, IconButton, keepWords } from "../../src/components/ui";
+import { Avatar, Button, Chip, Icon, IconButton, keepWords } from "../../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
 import { GitSheet } from "../../src/components/GitSheet";
@@ -70,13 +70,16 @@ interface DiffSummary {
   run?: string;
 }
 
+/** Claude 아바타 지름 — 도구 줄·실행 중 줄도 이만큼 들여 말풍선과 같은 선에 선다 */
+const BOT_AVATAR = 32;
+
 export default function Chat() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   // 어시스턴트 말풍선의 마크다운 렌더 스타일(테마 연동) — **, ``` 등이 원문으로 노출되지 않게 한다
   const mdStyles = useMemo(
     () => ({
-      body: { color: t.text, fontSize: font.size.body, lineHeight: 22 },
+      body: { color: t.text, fontSize: font.size.body, lineHeight: font.lineHeight.body },
       paragraph: { marginTop: 0, marginBottom: space.xs },
       heading1: { color: t.text, fontSize: font.size.lg, fontWeight: "700" as const, marginVertical: space.xs },
       heading2: { color: t.text, fontSize: font.size.md, fontWeight: "700" as const, marginVertical: space.xs },
@@ -963,7 +966,7 @@ export default function Chat() {
               </View>
             );
           }
-          return (
+          const bubble = (
             <Pressable
               key={i}
               style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
@@ -979,6 +982,12 @@ export default function Chat() {
                 )
               ) : null}
             </Pressable>
+          );
+          return m.role === "user" ? bubble : (
+            <View key={i} style={styles.botRow}>
+              <Avatar name="C" size={BOT_AVATAR} color={t.accent} textColor={t.onAccent} />
+              {bubble}
+            </View>
           );
         })}
 
@@ -1066,7 +1075,7 @@ export default function Chat() {
       ) : null}
       </View>
 
-      <KeyboardStickyView>
+      <KeyboardStickyView style={styles.sticky}>
         {/* 승인 모드 실행의 권한 요청 — 허용/거부 */}
         {perms.map((pm) => (
           <View key={pm.id} style={styles.permCard}>
@@ -1314,8 +1323,12 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingVertical: space.xs,
     backgroundColor: t.accentSoft,
   },
-  wtText: { flex: 1, fontSize: font.size.sm, color: t.accent, fontWeight: font.weight.bold },
+  wtText: { flex: 1, fontSize: font.size.sm, color: t.text, fontWeight: font.weight.bold },
   resumeBar: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    borderRadius: radius.pill,
+    boxShadow: t.shadowCard,
     paddingLeft: space.lg,
     paddingRight: space.xs,
     backgroundColor: t.surface,
@@ -1385,32 +1398,43 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     minWidth: TOUCH,
     minHeight: TOUCH,
     justifyContent: "center",
-    borderRadius: radius.lg,
-    borderBottomRightRadius: space.xs,
+    borderRadius: radius.md,
+    borderBottomRightRadius: radius.tail,
+    boxShadow: t.shadowCard,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
     maxWidth: "85%",
   },
   assistantBubble: {
-    alignSelf: "flex-start",
+    flexShrink: 1,
     backgroundColor: t.bubbleBot,
     minWidth: TOUCH,
     minHeight: TOUCH,
     justifyContent: "center",
-    borderRadius: radius.lg,
-    borderBottomLeftRadius: space.xs,
+    borderRadius: radius.md,
+    borderBottomLeftRadius: radius.tail,
+    boxShadow: t.shadowCard,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    maxWidth: "85%",
+  },
+  // Claude 아바타 + 말풍선 — 아바타는 말풍선 아래 끝(꼬리 쪽)에 붙는다
+  botRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
+    alignSelf: "flex-start",
+    maxWidth: "92%",
   },
   userText: {
     fontSize: font.size.body,
-    lineHeight: 22,
-    color: t.text,
+    lineHeight: font.lineHeight.body,
+    color: t.onBubbleUser,
   },
+  // 아바타 폭만큼 들여 Claude 말풍선과 같은 선에
   toolOnlyRow: {
     alignSelf: "flex-start",
     maxWidth: "85%",
+    marginLeft: BOT_AVATAR + space.sm,
   },
   toolButton: {
     flexDirection: "row",
@@ -1420,9 +1444,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     height: 28,
     paddingHorizontal: space.sm,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
     backgroundColor: t.surface,
+    boxShadow: t.shadowCard,
     marginBottom: space.xs,
   },
   toolButtonText: {
@@ -1444,6 +1467,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
     paddingVertical: space.sm,
+    paddingLeft: BOT_AVATAR + space.sm,
   },
   runningText: {
     fontSize: font.size.sm,
@@ -1570,16 +1594,19 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     width: TOUCH,
     height: TOUCH,
     borderRadius: TOUCH / 2,
-    backgroundColor: t.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
+    backgroundColor: t.surface,
+    boxShadow: t.shadowRaised,
     alignItems: "center",
     justifyContent: "center",
   },
+  // 키보드가 열리면 리스트 위에 겹쳐 뜬다 — 권한 카드 좌우 여백으로 뒤 메시지가 비치지 않게 바탕을 칠한다
+  sticky: { backgroundColor: t.bg },
   permCard: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
-    backgroundColor: t.surface,
+    marginHorizontal: space.md,
+    marginBottom: space.sm,
+    borderRadius: radius.lg,
+    boxShadow: t.shadowRaised,
+    backgroundColor: t.elevated,
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
     gap: space.sm,
@@ -1647,10 +1674,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   permReason: {
     minHeight: TOUCH,
     paddingHorizontal: space.md,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.pill,
+    borderWidth: 1,
     borderColor: t.inputBorder,
-    backgroundColor: t.bg,
+    backgroundColor: t.surface,
     fontSize: font.size.sm,
     color: t.text,
   },
@@ -1661,8 +1688,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: space.sm,
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
     backgroundColor: t.bg,
   },
   chipText: {
@@ -1703,8 +1728,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.sm,
     gap: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
     // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
     backgroundColor: t.bg,
   },
@@ -1748,7 +1771,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingBottom: space.md,
     borderRadius: TOUCH / 2,
     backgroundColor: t.surface,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,

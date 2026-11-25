@@ -83,7 +83,7 @@ export function ScheduleSection({ pc, project }: { pc: PC; project: string }) {
 
   return (
     <>
-      <ListRow
+      <ListRow card
         title="예약 실행"
         subtitle={next ? `${list.length}개 · 다음 ${nextLabel(next)}` : "요일·시각마다 새 대화로 실행"}
         onPress={() => { setError(null); setView("list"); }}
@@ -178,7 +178,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: t.border,
+    borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,
   },

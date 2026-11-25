@@ -97,7 +97,7 @@ export default function Needs() {
 
       {waiting.length > 0 ? <Text style={styles.section}>답 기다리는 대화 {waiting.length}</Text> : null}
       {waiting.map(({ pc, s }) => (
-        <ListRow
+        <ListRow card
           key={`${pc.id}:${s.project}:${s.session_id}`}
           title={s.name || s.preview || "제목 없는 대화"}
           subtitle={`${s.project}${multiPc ? ` · ${pc.label}` : ""} · ${formatUpdated(s.updated)}`}
@@ -134,12 +134,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingBottom: space.sm,
   },
   perm: {
-    marginHorizontal: space.lg,
+    marginHorizontal: space.md,
     marginBottom: space.md,
     padding: space.md,
     gap: space.sm,
-    borderRadius: radius.md,
-    backgroundColor: t.surface,
+    borderRadius: radius.lg,
+    backgroundColor: t.elevated,
+    boxShadow: t.shadowRaised,
   },
   permHead: {
     flexDirection: "row",
