@@ -1,4 +1,4 @@
-import type { Project, Preflight, RateLimit, ResumeReservation, SessionInfo, TranscriptMsg } from "./types";
+import type { Project, Preflight, RateLimit, ResumeReservation, Schedule, SessionInfo, TranscriptMsg } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -70,6 +70,14 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       if (!(res as any).ok) throw new HttpError((res as any).status, p);
     },
     cancelResumeAtReset: (project: string) => f(`${baseUrl}/resume-at-reset/${encodeURIComponent(project)}`, { method: "DELETE", headers: h } as any),
+    schedules: (project: string): Promise<Schedule[]> => jget(`/schedules/${encodeURIComponent(project)}`),
+    addSchedule: (project: string, s: { days: number[]; time: string; prompt: string; mode: string }): Promise<Schedule> =>
+      jpost(`/schedules/${encodeURIComponent(project)}`, s),
+    deleteSchedule: async (project: string, id: string) => {
+      const p = `/schedules/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
+      const r = await f(`${baseUrl}${p}`, { method: "DELETE", headers: h } as any);
+      if (!(r as any).ok) throw new HttpError((r as any).status, p);
+    },
     sessions: (project: string, opts: { q?: string; archived?: boolean } = {}): Promise<SessionInfo[]> => {
       const qs = [opts.q ? `q=${encodeURIComponent(opts.q)}` : "", opts.archived ? "archived=1" : ""].filter(Boolean).join("&");
       return jget(`/sessions/${encodeURIComponent(project)}${qs ? `?${qs}` : ""}`);
