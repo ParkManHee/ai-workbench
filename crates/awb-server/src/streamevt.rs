@@ -23,6 +23,71 @@ fn truncate_chars(s: &str, max_chars: usize) -> (String, bool) {
     (truncated, truncated_flag)
 }
 
+/// 사용량 한도 상태 — claude 스트림의 rate_limit_event 그대로(남은 %는 스트림에 없다).
+/// status: "allowed" | "allowed_warning" | "rejected"(차단). project 는 워처가 채운다.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct RateLimit {
+    pub status: String,
+    pub resets_at: Option<u64>,
+    pub rate_limit_type: Option<String>,
+    pub session_id: Option<String>,
+    pub project: String,
+}
+
+/// 로그 텍스트에서 마지막 한도 정보 — CLI 는 바뀐 상태만 다시 내보내므로 마지막 것이 현재 상태다.
+/// 차단 중에는 rate_limit_event 대신 assistant 응답의 api_error_params 에만 나올 수 있다(t3-code ClaudeAdapterV2.ts:5017).
+pub fn last_rate_limit(text: &str) -> Option<RateLimit> {
+    text.lines()
+        .filter(|l| l.contains("\"rate_limit_event\"") || l.contains("\"api_error_params\""))
+        .filter_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            let i = match v.get("type")?.as_str()? {
+                "rate_limit_event" => v.get("rate_limit_info")?,
+                "assistant" => v.get("api_error_params")?.get("rate_limit_info")?,
+                _ => return None,
+            };
+            Some(RateLimit {
+                status: i.get("status")?.as_str()?.to_string(),
+                resets_at: i.get("resetsAt").and_then(|x| x.as_u64()),
+                rate_limit_type: i.get("rateLimitType").and_then(|x| x.as_str()).map(String::from),
+                session_id: v.get("session_id").and_then(|x| x.as_str()).map(String::from),
+                project: String::new(),
+            })
+        })
+        .last()
+}
+
+/// 진행 알림에 싣는 현재 단계 — 마지막 tool_use 도구 이름과 마지막 TodoWrite 의 (완료, 전체).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub step: String,
+    pub todo: Option<(usize, usize)>,
+}
+
+/// 로그 텍스트에서 현재 단계. parse_line 의 ToolUse 는 input 을 200자로 잘라 todos 를 못 읽으므로 따로 본다.
+pub fn latest_progress(text: &str) -> Option<Progress> {
+    let mut step = None;
+    let mut todo = None;
+    for l in text.lines().filter(|l| l.contains("\"tool_use\"")) {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else { continue };
+        for item in content.iter().filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("tool_use")) {
+            let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
+            if name == "TodoWrite" {
+                if let Some(todos) = item.get("input").and_then(|i| i.get("todos")).and_then(|t| t.as_array()) {
+                    let done = todos.iter().filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("completed")).count();
+                    todo = Some((done, todos.len()));
+                }
+            }
+            step = Some(name.to_string());
+        }
+    }
+    step.map(|step| Progress { step, todo })
+}
+
 pub fn parse_line(line: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(line).ok()?;
     match v.get("type").and_then(|t| t.as_str()) {
@@ -75,6 +140,26 @@ mod tests {
             Some(Event::ToolUse { name, .. }) => assert_eq!(name, "Bash"),
             other => panic!("expected ToolUse, got {other:?}"),
         }
+    }
+    #[test]
+    fn last_rate_limit_picks_last_event() {
+        // 실측 줄(~/.claude/.awb-runs/1783505085-7679-0.log) 그대로 + 뒤에 차단 이벤트
+        let real = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783508400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false},"uuid":"06880897-b148-4535-ab2d-7d64eb56fd8c","session_id":"0504bb6f-da3c-4c2d-a7ae-7eb686c54928"}"#;
+        let first = last_rate_limit(real).unwrap();
+        assert_eq!((first.status.as_str(), first.resets_at, first.rate_limit_type.as_deref()), ("allowed", Some(1783508400), Some("five_hour")));
+        assert_eq!(first.session_id.as_deref(), Some("0504bb6f-da3c-4c2d-a7ae-7eb686c54928"));
+        let blocked = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1783512000,"rateLimitType":"five_hour"},"session_id":"s2"}"#;
+        let text = format!("{real}\n{{\"type\":\"assistant\",\"message\":{{}}}}\n{blocked}\n");
+        let last = last_rate_limit(&text).unwrap();
+        assert_eq!((last.status.as_str(), last.resets_at), ("rejected", Some(1783512000)));
+    }
+    #[test]
+    fn last_rate_limit_includes_blocked_assistant_error() {
+        // assistant 차단 응답 구조는 t3-code ClaudeAdapterV2.test.ts:3695-3716·9196 픽스처를 따른다
+        let event = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783508400,"rateLimitType":"five_hour"},"session_id":"s1"}"#;
+        let blocked = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"limit"}]},"parent_tool_use_id":null,"error":"rate_limit","api_error_params":{"rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1783512000}},"uuid":"u","session_id":"s1"}"#;
+        let last = last_rate_limit(&format!("{event}\n{blocked}\n")).unwrap();
+        assert_eq!((last.status.as_str(), last.resets_at, last.session_id.as_deref()), ("rejected", Some(1783512000), Some("s1")));
     }
     #[test]
     fn ignores_unparseable() { assert!(parse_line("garbage").is_none()); }

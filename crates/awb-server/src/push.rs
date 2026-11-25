@@ -68,8 +68,64 @@ pub fn send(tokens: &[String], title: &str, body: &str, data: &serde_json::Value
     if tokens.is_empty() {
         return;
     }
-    let msgs = build_messages(tokens, title, body, data);
-    let payload = serde_json::to_string(&msgs).unwrap_or_default();
+    post(&build_messages(tokens, title, body, data));
+}
+
+/// title/body 없는 data-only 푸시 — 안드로이드에서 FCM data 메시지로 가야 앱 백그라운드 태스크가 깨어난다.
+/// high: Doze 중에도 지연 없이 배달되게.
+pub fn send_data(tokens: &[String], data: &serde_json::Value) {
+    if tokens.is_empty() {
+        return;
+    }
+    let msgs: Vec<_> = tokens.iter().map(|t| serde_json::json!({"to": t, "data": data, "priority": "high"})).collect();
+    post(&msgs);
+}
+
+/// 진행 푸시 최소 간격 — 단계마다 보내면 FCM·알림 갱신이 과해 마지막 단계만 묶어 보낸다.
+const PROGRESS_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[derive(Default)]
+pub struct ProgressThrottle {
+    seen: Option<crate::streamevt::Progress>,
+    pending: Option<crate::streamevt::Progress>,
+    last_sent: Option<std::time::Instant>,
+}
+
+impl ProgressThrottle {
+    /// 단계가 바뀌면 보류에 올리고, 마지막 전송 후 PROGRESS_MIN_GAP 이 지났으면 보류분(마지막 것)을 내준다.
+    pub fn tick(&mut self, latest: Option<crate::streamevt::Progress>, now: std::time::Instant) -> Option<crate::streamevt::Progress> {
+        if latest.is_some() && latest != self.seen {
+            self.pending = latest.clone();
+            self.seen = latest;
+        }
+        let due = self.last_sent.is_none_or(|t| now.duration_since(t) >= PROGRESS_MIN_GAP);
+        if self.pending.is_some() && due {
+            self.last_sent = Some(now);
+            return self.pending.take();
+        }
+        None
+    }
+    pub fn sent_any(&self) -> bool {
+        self.last_sent.is_some()
+    }
+}
+
+/// 폰이 WS 로 붙어 있으면 보내지 않는다. 그동안 tick 을 건너뛰어, 끊긴 뒤 첫 틱에 최신 단계가 나간다.
+pub fn progress_to_send(
+    reg: &crate::runreg::RunRegistry,
+    run_id: &str,
+    th: &mut ProgressThrottle,
+    latest: Option<crate::streamevt::Progress>,
+    now: std::time::Instant,
+) -> Option<crate::streamevt::Progress> {
+    if reg.is_attached(run_id) {
+        return None;
+    }
+    th.tick(latest, now)
+}
+
+fn post(msgs: &[serde_json::Value]) {
+    let payload = serde_json::to_string(msgs).unwrap_or_default();
     match std::process::Command::new("curl")
         .args([
             "-s",
@@ -91,6 +147,14 @@ pub fn send(tokens: &[String], title: &str, body: &str, data: &serde_json::Value
     }
 }
 
+/// run 로그 전체에서 마지막 한도 이벤트를 /info 상태에 반영한다 — 워처와 WS done 경로 공용
+pub fn record_rate_limit(st: &crate::routes::AppState, project: &str, log_text: &str) {
+    if let Some(mut rl) = crate::streamevt::last_rate_limit(log_text) {
+        rl.project = project.to_string();
+        *st.rate_limit.lock().unwrap() = Some(rl);
+    }
+}
+
 /// run 완료를 폴링하다 완료되면 run_status로 락을 해제하고, notified 게이트를 통과할 때만 푸시를 보낸다.
 /// 순서: done 감지 → run_status(락 해제, WS 미접속으로 인한 락 잔류 방지) → should_push 게이트 → (필요시) send.
 /// hung run 상한(초). claude가 멈춰도 락이 무기한 잡히지 않게 워처가 강제 종료한다.
@@ -106,8 +170,27 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
         };
         let timeout = run_timeout_secs();
         let started = std::time::Instant::now();
+        let mut progress = ProgressThrottle::default();
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
+            record_rate_limit(&st, &meta.project, &chunk.text);
+            if !chunk.done {
+                let latest = crate::streamevt::latest_progress(&chunk.text);
+                if let Some(p) = progress_to_send(&st.runs, &run_id, &mut progress, latest, std::time::Instant::now()) {
+                    // 탭 시 완료 푸시와 같은 딥링크(hostname/path/session)로 열리게 같은 키를 싣는다
+                    let data = serde_json::json!({
+                        "kind": "progress",
+                        "project": meta.project,
+                        "run_id": run_id,
+                        "step": p.step,
+                        "todo": p.todo.map(|(done, total)| serde_json::json!({"done": done, "total": total})),
+                        "hostname": crate::routes::resolve_hostname(),
+                        "path": meta.workdir,
+                        "session": st.sessions.get(&meta.project),
+                    });
+                    send_data(&st.push.list(), &data);
+                }
+            }
             if !chunk.done && started.elapsed().as_secs() >= timeout {
                 // hung run: 그룹 종료 + 타임아웃 코드 기록 → 다음 틱에 done 경로(락 해제·푸시)로 수렴
                 eprintln!("run {run_id} 타임아웃({timeout}s) — 프로세스 그룹 강제 종료");
@@ -120,6 +203,11 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                 // (WS 루프는 라인 단위로 파싱하지만, 여기선 WS가 없었을 수 있으므로 로그 전체를 읽어 찾는다.)
                 if let Some(sid) = crate::sessions::capture_session_id_from_log(&meta.log) {
                     st.sessions.record(&meta.project, &sid, meta.fork_of.as_deref());
+                }
+                // shortcut: 데몬이 run 도중 재시작되면 progress_end 가 안 가 고정 알림이 남는다(탭하면 지워짐), 기기에서 겪으면 앱 시작 시 정리로 올린다
+                if progress.sent_any() {
+                    // 앱은 identifier=progress-<project> 로 지우므로 project 가 필요하다
+                    send_data(&st.push.list(), &serde_json::json!({"kind": "progress_end", "project": meta.project, "run_id": run_id}));
                 }
                 if should_push(&st.runs, &run_id) {
                     let tokens = st.push.list();
@@ -170,6 +258,33 @@ mod tests {
             RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
+    }
+
+    fn step(s: &str) -> Option<crate::streamevt::Progress> {
+        Some(crate::streamevt::Progress { step: s.into(), todo: None })
+    }
+
+    #[test]
+    fn progress_throttle_holds_14s_and_sends_last_at_15s() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut th = ProgressThrottle::default();
+        assert_eq!(th.tick(step("Read"), t0), step("Read")); // 첫 단계는 바로
+        assert_eq!(th.tick(step("Bash"), t0 + Duration::from_secs(10)), None);
+        assert_eq!(th.tick(step("Edit"), t0 + Duration::from_secs(14)), None); // 14초: 보류
+        assert_eq!(th.tick(step("Edit"), t0 + Duration::from_secs(15)), step("Edit")); // 15초: 마지막 것만
+        assert_eq!(th.tick(step("Edit"), t0 + Duration::from_secs(40)), None); // 안 바뀌면 다시 안 보냄
+    }
+
+    #[test]
+    fn progress_skipped_while_ws_attached_then_sent_after_detach() {
+        let r = RunRegistry::new();
+        let mut th = ProgressThrottle::default();
+        let now = std::time::Instant::now();
+        r.attach("x");
+        assert_eq!(progress_to_send(&r, "x", &mut th, step("Bash"), now), None);
+        r.detach("x");
+        assert_eq!(progress_to_send(&r, "x", &mut th, step("Bash"), now), step("Bash"));
     }
 
     #[test]

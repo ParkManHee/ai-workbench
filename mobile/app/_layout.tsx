@@ -1,11 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useColorScheme } from "react-native";
-import { Stack, router } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import * as Notifications from "expo-notifications";
 import { makeClient } from "../src/lib/api";
+import { PROGRESS_CHANNEL } from "../src/lib/progress";
 import type { PC } from "../src/lib/types";
 import { loadPCs } from "../src/store/pcs";
 
@@ -19,7 +20,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-async function registerPush(pc: PC): Promise<void> {
+async function registerPush(pcs: PC[]): Promise<void> {
   // Push is an optional convenience (completion notifications); any failure
   // here (no FCM credentials in dev, permission denied, network error, ...)
   // must never crash or block the app.
@@ -29,12 +30,25 @@ async function registerPush(pc: PC): Promise<void> {
       name: "실행 알림",
       importance: Notifications.AndroidImportance.HIGH,
     });
+    // 진행 알림은 15초마다 덮어써지므로 소리·진동·헤드업 없이
+    await Notifications.setNotificationChannelAsync(PROGRESS_CHANNEL, {
+      name: "진행 중",
+      importance: Notifications.AndroidImportance.LOW,
+      sound: null,
+      enableVibrate: false,
+    });
     const perm = await Notifications.requestPermissionsAsync();
-    if (!perm.granted) return;
+    if (!perm.granted) {
+      console.warn("[push] permission not granted:", perm.status);
+      return;
+    }
     const expoToken = await Notifications.getExpoPushTokenAsync();
-    await makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data);
-  } catch {
-    // ignore
+    // PC 마다 따로 catch — 꺼진 PC 하나가 다른 PC 등록을 막지 않게
+    await Promise.all(pcs.map((pc) =>
+      makeClient(pc.baseUrl, pc.token).registerPush(expoToken.data).catch((e) => console.warn("[push] register failed:", pc.baseUrl, e))
+    ));
+  } catch (e) {
+    console.warn("[push] register failed:", e);
   }
 }
 
@@ -58,14 +72,21 @@ async function openFromNotification(data: Record<string, unknown> | undefined): 
 }
 
 export default function RootLayout() {
+  const pathname = usePathname();
+  const pushTried = useRef(new Set<string>());
+  // 첫 실행엔 PC 가 없어 등록을 건너뛰므로, 화면이 바뀔 때마다 아직 시도 안 한 PC(새로 페어링한 PC 포함)를 등록한다
   useEffect(() => {
     loadPCs().then((pcs) => {
-      if (pcs.length === 0) {
-        router.replace("/pair");
-        return;
-      }
-      // Best-effort: register push for the first PC only (v1 simplification).
-      registerPush(pcs[0]);
+      const fresh = pcs.filter((p) => !pushTried.current.has(p.id));
+      if (fresh.length === 0) return;
+      fresh.forEach((p) => pushTried.current.add(p.id));
+      registerPush(fresh);
+    });
+  }, [pathname]);
+
+  useEffect(() => {
+    loadPCs().then((pcs) => {
+      if (pcs.length === 0) router.replace("/pair");
     });
     // 앱이 떠 있거나 백그라운드일 때 알림 탭
     const sub = Notifications.addNotificationResponseReceivedListener((resp) => {

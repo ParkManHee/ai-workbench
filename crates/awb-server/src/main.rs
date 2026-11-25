@@ -8,6 +8,7 @@ mod gc;
 mod launchd;
 mod perm;
 mod queue;
+mod resume;
 mod routes;
 mod runreg;
 mod sessions;
@@ -28,6 +29,14 @@ async fn main() {
 async fn serve() {
     let cfg = config::ServerConfig::from_env();
     let addr = config::bind_addr(&cfg);
+    // 바인드를 맨 앞에 — 실패 재시작 루프마다 QR 출력·예약 스케줄러 첫 틱(지난 예약 실행)이 반복되지 않게
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("바인드 실패({addr}): {e} — 종료.");
+            std::process::exit(bind_fail_exit_code(e.kind()));
+        }
+    };
     if config::tailnet_ipv4().is_none() {
         eprintln!("경고: tailscale IPv4 미탐지 — 루프백({addr})에만 바인드(외부 폰 접속 불가). Tailscale 실행 확인.");
     }
@@ -61,17 +70,31 @@ async fn serve() {
         started_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         push: push::PushStore::load(&format!("{}/.claude/.awb-push-tokens.json", std::env::var("HOME").unwrap_or_default())),
         uploads_dir: format!("{}/.claude/.awb-uploads", std::env::var("HOME").unwrap_or_default()),
+        rate_limit: Default::default(),
+        resume: resume::ResumeStore::load(&format!("{}/.claude/.awb-resume-at-reset.json", std::env::var("HOME").unwrap_or_default())),
     };
     gc::spawn_gc(cfg.runs_dir.clone(), state.uploads_dir.clone());
+    resume::spawn_scheduler(state.clone());
     let app = routes::router(state.clone());
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            // 단일 인스턴스 가드: 주소 사용중이면 기존 서버가 상주 중
-            eprintln!("바인드 실패({addr}): {e} — 이미 다른 awb-server가 서빙 중일 수 있음. 종료.");
-            std::process::exit(0);
-        }
-    };
     eprintln!("awb-server 서빙: http://{addr}");
     axum::serve(listener, app).await.unwrap();
+}
+
+/// 주소 사용 중(다른 awb-server 상주)만 정상 종료(0) — launchd KeepAlive{SuccessfulExit:false} 가 되살리지 않게.
+/// 그 밖(Tailscale 꺼져 tailnet IP 가 없음 = EADDRNOTAVAIL 등)은 1 로 끝내 launchd 가 다시 띄우게 한다.
+/// 2026-11-05~24 exit 0 으로 끝나 19일간 데몬이 꺼져 있었다.
+fn bind_fail_exit_code(kind: std::io::ErrorKind) -> i32 {
+    if kind == std::io::ErrorKind::AddrInUse { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_fail_exit_code;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn bind_fail_restarts_unless_addr_in_use() {
+        assert_eq!(bind_fail_exit_code(ErrorKind::AddrInUse), 0);
+        assert_eq!(bind_fail_exit_code(ErrorKind::AddrNotAvailable), 1);
+    }
 }

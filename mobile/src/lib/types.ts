@@ -11,8 +11,12 @@ export interface ChatMsg { role: "user" | "assistant"; text: string; tools?: str
 export interface ChatState { messages: ChatMsg[]; running: boolean; verdict: string | null; changedFiles: number; error: string | null }
 
 /** 페어링된 PC 하나(멀티-PC 지원). id는 baseUrl에서 파생된 안정적 식별자(pcs-util#pcId 참고). */
-export interface PC { id: string; label: string; baseUrl: string; token: string }
+export interface PC { id: string; label: string; baseUrl: string; token: string; lastSeen?: number }
 /** 데몬 `/sessions/:project` 응답 항목. */
-export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean }
+export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean; name?: string | null; archived?: boolean }
 /** 데몬 `/transcript/:project/:sessionId` 응답의 메시지 항목. */
 export interface TranscriptMsg { role: string; text: string; tools: string[]; tool_details: string[]; options?: string[]; todos?: string[] }
+/** /info.rate_limit — claude 스트림의 마지막 rate_limit_event. status: allowed | allowed_warning | rejected(차단) */
+export interface RateLimit { status: string; resets_at: number | null; rate_limit_type: string | null; session_id: string | null; project: string }
+/** 한도 리셋 때 이어가기 예약(프로젝트당 1개) */
+export interface ResumeReservation { session_id: string; resets_at: number; mode?: string; model?: string | null; effort?: string | null }

@@ -9,12 +9,14 @@ pub struct QueuedTurn {
     pub plan: bool,
     /// 큐잉 시점에 폰이 지정한 세션(없으면 실행 시점의 프로젝트 최신 세션으로 resume)
     pub resume_session_id: Option<String>,
-    /// 승인 모드(툴 권한을 폰으로 릴레이) 여부 — 큐잉 시점 설정 유지
-    pub approval: bool,
+    /// 권한 모드 — 큐잉 시점 설정 유지
+    pub mode: String,
     /// 모델 오버라이드(없으면 기본)
     pub model: Option<String>,
     /// effort 오버라이드(없으면 기본)
     pub effort: Option<String>,
+    /// 앱 "+ 새 대화" 첫 전송 — 실행 시점에도 저장 세션을 잇지 않는다
+    pub new_session: bool,
 }
 
 #[derive(Clone, Default)]
@@ -49,10 +51,10 @@ pub fn spawn_drain(st: crate::routes::AppState, project: String, workdir: String
     tokio::spawn(async move {
         for _ in 0..120 {
             let Some(t) = st.queue.pop(&project) else { return };
-            let (resume, fork_of) = crate::routes::resolve_resume(&st, &project, t.resume_session_id.clone());
-            let mcp_cfg = if t.approval { crate::routes::write_approval_mcp_cfg(&st, &project) } else { None };
+            let (resume, fork_of) = crate::routes::resolve_resume(&st, &project, t.resume_session_id.clone(), t.new_session);
+            let mcp_cfg = crate::routes::approval_mcp_cfg_for(&st, &project, &t.mode);
             match awb_core::runner::start_stream_run(
-                &st.claude_bin, &workdir, &st.settings_path, t.plan, &t.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), t.model.as_deref(), t.effort.as_deref(),
+                &st.claude_bin, &workdir, &st.settings_path, t.plan, &t.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), t.model.as_deref(), t.effort.as_deref(), &t.mode,
             ) {
                 Ok(h) => {
                     let run_id = crate::routes::run_id_of(&h.log);
@@ -78,8 +80,8 @@ mod tests {
     #[test]
     fn fifo_with_push_front_recovery() {
         let q = TurnQueue::new();
-        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "a".into(), plan: false, resume_session_id: None, approval: false, model: None, effort: None }), 1);
-        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "b".into(), plan: false, resume_session_id: None, approval: false, model: None, effort: None }), 2);
+        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "a".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None, new_session: false }), 1);
+        assert_eq!(q.enqueue("p", QueuedTurn { prompt: "b".into(), plan: false, resume_session_id: None, mode: "auto".into(), model: None, effort: None, new_session: false }), 2);
         let a = q.pop("p").unwrap();
         assert_eq!(a.prompt, "a");
         q.push_front("p", a); // 실행 실패 → 순서 보존 복귀

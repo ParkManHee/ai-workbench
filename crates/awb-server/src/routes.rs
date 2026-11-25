@@ -35,6 +35,10 @@ pub struct AppState {
     pub base_url: String,
     /// 데몬 시작 시각(epoch초) — /info uptime용
     pub started_at: u64,
+    /// 마지막으로 관측한 사용량 한도(run 로그의 rate_limit_event) — /info 로 앱에 싣는다
+    pub rate_limit: Arc<Mutex<Option<crate::streamevt::RateLimit>>>,
+    /// 한도 리셋 때 이어가기 예약
+    pub resume: crate::resume::ResumeStore,
 }
 
 /// 폰↔데몬 프로토콜 버전 — 폰이 자신이 아는 버전과 비교해 업데이트 배너를 띄운다.
@@ -67,14 +71,76 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
 }
 
 #[derive(serde::Deserialize)]
-pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String> }
+pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String>, #[serde(default)] pub scope: Option<String>, #[serde(default)] pub run: Option<String> }
 
 /// file 없으면 변경 요약, file 있으면 해당 파일의 unified diff(폰에서 파일 행 탭 시).
-pub async fn diff_handler(Query(q): Query<DiffQuery>) -> Json<serde_json::Value> {
-    match q.file {
+/// scope=turn&run=<id> 면 그 run 의 시작·끝 스냅샷 사이(그 턴의 변경)만.
+pub async fn diff_handler(State(st): State<AppState>, Query(q): Query<DiffQuery>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if q.scope.as_deref() == Some("turn") {
+        let (t0, t1) = q.run.as_deref().and_then(|r| crate::gitdiff::turn_trees(&st.runs_dir, r))
+            .ok_or((StatusCode::NOT_FOUND, "이 run 의 스냅샷이 없습니다".into()))?;
+        return Ok(Json(match q.file {
+            Some(f) => serde_json::json!({ "file": f, "diff": crate::gitdiff::file_diff_turn(&q.path, &t0, &t1, &f) }),
+            None => serde_json::to_value(crate::gitdiff::summarize_turn(&q.path, &t0, &t1)).unwrap_or_default(),
+        }));
+    }
+    Ok(match q.file {
         Some(f) => Json(serde_json::json!({ "file": f, "diff": crate::gitdiff::file_diff(&q.path, &f) })),
         None => Json(serde_json::to_value(crate::gitdiff::summarize(&q.path)).unwrap_or_default()),
+    })
+}
+
+fn project_path(st: &AppState, project: &str) -> Result<String, (StatusCode, String)> {
+    awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).map(|p| p.path)
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))
+}
+
+/// git/gh 는 수 초~수십 초 걸린다(push·PR) — 런타임 워커를 막지 않게 블로킹 풀에서.
+async fn git_blocking(f: impl FnOnce() -> Result<String, (StatusCode, String)> + Send + 'static) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let out = tokio::task::spawn_blocking(f).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(serde_json::json!({ "output": out })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CommitBody { pub message: String, #[serde(default)] pub branch: Option<String> }
+
+pub async fn git_commit_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<CommitBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::commit(&path, &b.message, b.branch.as_deref())).await
+}
+
+pub async fn git_push_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::push(&path)).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct PrBody { pub title: String, #[serde(default)] pub body: String }
+
+pub async fn git_pr_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<PrBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    git_blocking(move || crate::gitdiff::pr(&path, &b.title, &b.body)).await
+}
+
+/// 커밋 메시지 초안(haiku 한 줄) + 기본 브랜치 여부(앱이 브랜치 이름 칸을 띄울지). 초안 실패는 빈 문자열.
+pub async fn git_draft_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = project_path(&st, &project)?;
+    let (input, on_default) = tokio::task::spawn_blocking(move || (crate::gitdiff::draft_input(&path), crate::gitdiff::on_default_branch(&path)))
+        .await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut message = String::new();
+    if let Some(input) = input {
+        let prompt = format!("아래 git 변경을 한국어 한 줄 커밋 메시지로 요약해라. 마크다운·백틱 없이 평문 한 줄만 출력한다.\n\n{input}");
+        // 프로젝트 맥락·도구 없이 요약만 — 임시 디렉터리에서, 세션도 남기지 않는다
+        let fut = tokio::process::Command::new(&st.claude_bin)
+            .args(["-p", &prompt, "--model", "haiku", "--tools", "", "--no-session-persistence"])
+            .current_dir(std::env::temp_dir()).kill_on_drop(true).output();
+        if let Ok(Ok(o)) = tokio::time::timeout(std::time::Duration::from_secs(60), fut).await {
+            if o.status.success() {
+                message = crate::gitdiff::clean_draft(&String::from_utf8_lossy(&o.stdout));
+            }
+        }
     }
+    Ok(Json(serde_json::json!({ "message": message, "on_default": on_default })))
 }
 
 pub fn default_roots() -> Vec<String> {
@@ -97,9 +163,12 @@ pub async fn awake_handler(State(st): State<AppState>, Json(b): Json<AwakeBody>)
 
 /// `claude --effort` 허용값(claude --help 기준)
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// `claude --permission-mode` 로 그대로 넘기는 값 — 감독·편집 자동·Auto·전체. 마지막만 승인 중계 없이 돈다
+const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "auto", "bypassPermissions"];
+pub(crate) fn default_mode() -> String { "auto".into() }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default)] pub approval: bool, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String> }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String>, #[serde(default)] pub new_session: bool }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -109,27 +178,30 @@ pub struct ChatResult {
     pub position: Option<usize>,
 }
 
-pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>) -> (Option<String>, Option<String>) {
-    crate::sessions::decide_resume(want, st.sessions.get(project), st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
+/// new_session 이면 저장된 마지막 세션을 쓰지 않는다 — 앱 "+ 새 대화" 의 첫 전송이 이전 대화를 잇던 것
+pub fn resolve_resume(st: &AppState, project: &str, want: Option<String>, new_session: bool) -> (Option<String>, Option<String>) {
+    let stored = if new_session { None } else { st.sessions.get(project) };
+    crate::sessions::decide_resume(want, stored, st.sessions.forked_from(project), &awb_core::live::live_interactive_ids())
 }
 
 pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<ChatBody>) -> Result<Json<ChatResult>, (StatusCode, String)> {
     // 프로젝트 경로 확인
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project)
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))?;
-    // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용
+    // resume_session_id가 있으면 특정 세션으로 강제 resume(폰에서 과거 세션 선택), 없으면 프로젝트별 저장된 마지막 세션 사용(new_session 이면 resume 없이 새로)
     // claude CLI가 받는 값만 통과 — 틀린 값을 조용히 무시하지 않고 거부한다
     if let Some(e) = b.effort.as_deref() {
         if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
     }
-    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone());
-    let mcp_cfg = if b.approval { write_approval_mcp_cfg(&st, &project) } else { None };
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref()) {
+    if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
+    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone(), b.new_session);
+    let mcp_cfg = approval_mcp_cfg_for(&st, &project, &b.mode);
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref(), &b.mode) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
-                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), approval: b.approval, model: b.model.clone(), effort: b.effort.clone(),
+                prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), mode: b.mode.clone(), model: b.model.clone(), effort: b.effort.clone(), new_session: b.new_session,
             });
             return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
         }
@@ -152,6 +224,11 @@ pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<Strin
     // SIGTERM/SIGKILL로 그룹 전체가 죽으면 래퍼가 .done을 못 쓸 수 있으므로, 취소를 관측 가능하게 직접 기록한다(128+SIGTERM=143).
     awb_core::runlog::mark_done_if_absent(&meta.log, 143);
     Ok(if dead { StatusCode::OK } else { StatusCode::ACCEPTED })
+}
+
+/// 전체(bypassPermissions)만 중계 없이 사전 허용 설정으로 돈다 — 나머지 모드는 claude 가 묻는 것을 폰으로 넘긴다
+pub fn approval_mcp_cfg_for(st: &AppState, project: &str, mode: &str) -> Option<String> {
+    if mode == "bypassPermissions" { None } else { write_approval_mcp_cfg(st, project) }
 }
 
 /// 승인 모드 실행용 MCP 설정 파일 생성(런마다) — claude가 이 설정으로 릴레이 MCP를 띄운다.
@@ -190,6 +267,12 @@ pub async fn permission_request_handler(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
     if auth != format!("Bearer {}", st.perm_secret) { return Err(StatusCode::UNAUTHORIZED); }
+    // 프로젝트당 실행은 하나(락)라 요청한 run 은 그 프로젝트의 활성 run 이다. 로그에서 세션을 못 찾으면 기억하지 않고 매번 묻는다
+    let session_id = st.runs.active_for_project(&b.project)
+        .and_then(|(_, m)| crate::sessions::capture_session_id_from_log(&m.log));
+    if let Some(sid) = &session_id {
+        if st.perms.is_session_allowed(sid, &b.tool_name) { return Ok(Json(serde_json::json!({ "allow": true }))); }
+    }
     let id = crate::pairing::random_token()[..16].to_string();
     let summary = {
         let raw = b.input.to_string();
@@ -198,7 +281,7 @@ pub async fn permission_request_handler(
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     st.perms.insert(&id, crate::perm::PendingPerm {
-        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary.clone(), tx: Some(tx),
+        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary.clone(), session_id, tx: Some(tx),
     });
     // 앱 밖에서도 승인하러 올 수 있게 푸시(딥링크 포함)
     let tokens = st.push.list();
@@ -206,9 +289,10 @@ pub async fn permission_request_handler(
         "hostname": resolve_hostname(), "project": b.project, "path": "", "session": st.sessions.get(&b.project),
     });
     crate::push::send(&tokens, &format!("🔐 승인 요청 — {}", b.project), &format!("{}: {}", b.tool_name, summary), &data);
-    let allow = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await.ok().and_then(|r| r.ok()).unwrap_or(false);
+    let d = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await.ok().and_then(|r| r.ok())
+        .unwrap_or(crate::perm::Decision { allow: false, message: None });
     st.perms.remove(&id); // 타임아웃 잔류 정리(정상 응답이면 이미 제거됨)
-    Ok(Json(serde_json::json!({ "allow": allow })))
+    Ok(Json(serde_json::json!({ "allow": d.allow, "message": d.message })))
 }
 
 /// 폰 폴링: 이 프로젝트의 승인 대기 목록.
@@ -220,20 +304,20 @@ pub async fn permission_pending_handler(State(st): State<AppState>, Path(project
 }
 
 #[derive(serde::Deserialize)]
-pub struct PermAnswerBody { pub id: String, pub allow: bool }
+pub struct PermAnswerBody { pub id: String, pub allow: bool, #[serde(default)] pub for_session: bool, #[serde(default)] pub message: Option<String> }
 
 /// 폰의 승인/거부 — 대기 중인 MCP 요청을 깨운다.
 pub async fn permission_answer_handler(State(st): State<AppState>, Json(b): Json<PermAnswerBody>) -> StatusCode {
-    if st.perms.answer(&b.id, b.allow) { StatusCode::OK } else { StatusCode::NOT_FOUND }
+    if st.perms.answer(&b.id, b.allow, b.for_session, b.message) { StatusCode::OK } else { StatusCode::NOT_FOUND }
 }
 
 /// 프로젝트의 활성 run 조회 — 폰이 재진입/타 기기에서 진행 중 실행에 attach(취소·대기표시)할 수 있게.
 /// 활성 run이 없으면 200 + {run_id: null} ("없음"은 정상 상태라 404가 아님).
+/// session·forked_from: 백그라운드에서 끝난 실행은 앱이 done(새 session_id)을 못 받는다 — 갈라진 세션을 여기서 찾는다
 pub async fn active_run_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<serde_json::Value> {
-    match st.runs.active_for_project(&project) {
-        Some((run_id, _)) => Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project) })),
-        None => Json(serde_json::json!({ "run_id": null, "queued": st.queue.len(&project) })),
-    }
+    let run_id = st.runs.active_for_project(&project).map(|(id, _)| id);
+    Json(serde_json::json!({ "run_id": run_id, "queued": st.queue.len(&project),
+        "session": st.sessions.get(&project), "forked_from": st.sessions.forked_from(&project) }))
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -321,6 +405,7 @@ pub struct InfoDto {
     pub api_version: u32,
     pub uptime_secs: u64,
     pub active_runs: usize,
+    pub rate_limit: Option<crate::streamevt::RateLimit>,
 }
 
 /// macOS 친숙한 이름(`scutil --get ComputerName`) → 실패 시 `hostname` 명령 → 최종 폴백 `"Mac"`.
@@ -351,14 +436,52 @@ pub async fn info_handler(State(st): State<AppState>) -> Json<InfoDto> {
         api_version: API_VERSION,
         uptime_secs: now.saturating_sub(st.started_at),
         active_runs: st.runs.count(),
+        rate_limit: st.rate_limit.lock().unwrap().clone(),
     })
 }
 
-pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<Vec<awb_core::transcript::SessionInfo>>, StatusCode> {
+pub async fn resume_get_handler(State(st): State<AppState>, Path(project): Path<String>) -> Json<Option<crate::resume::Reservation>> {
+    Json(st.resume.get(&project))
+}
+
+/// 프로젝트당 1개 — 다시 걸면 덮어쓴다. 값 검증은 실행 시점 /chat 과 같은 기준으로 미리 한다.
+pub async fn resume_set_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<crate::resume::Reservation>) -> Result<StatusCode, (StatusCode, String)> {
+    project_path(&st, &project)?;
+    if let Some(e) = b.effort.as_deref() {
+        if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
+    }
+    if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
+    st.resume.set(&project, b);
+    Ok(StatusCode::OK)
+}
+
+pub async fn resume_delete_handler(State(st): State<AppState>, Path(project): Path<String>) -> StatusCode {
+    if st.resume.remove(&project) { StatusCode::OK } else { StatusCode::NOT_FOUND }
+}
+
+#[derive(serde::Deserialize)]
+pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived: u8 }
+
+pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>, Query(sq): Query<SessionsQuery>) -> Result<Json<Vec<crate::sessions::SessionRow>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
     // 종료된 터미널 세션은 숨긴다 — 열린 터미널 세션과 앱이 이어 쓰는 대화만
     let list = awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path));
-    Ok(Json(list.into_iter().filter(|s| s.live || s.app).collect()))
+    let list = list.into_iter().filter(|s| s.live || s.app).collect();
+    Ok(Json(crate::sessions::filter_rows(list, &st.sessions.metas(&project), sq.q.as_deref(), sq.archived == 1)))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SessionMetaBody {
+    #[serde(default, deserialize_with = "crate::sessions::present")]
+    pub name: Option<Option<String>>,
+    pub archived: Option<bool>,
+}
+
+/// 세션 이름·보관 — 데몬 메타 파일에만 쓰고 트랜스크립트는 건드리지 않는다.
+pub async fn session_meta_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Json(b): Json<SessionMetaBody>) -> Result<Json<crate::sessions::SessionMeta>, StatusCode> {
+    if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    st.sessions.set_meta(&project, &session_id, b.name, b.archived).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(serde::Deserialize)]
@@ -381,6 +504,20 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
     }
     let (msgs, next, active) = awb_core::transcript::read_transcript(&path, q.from);
     Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active })))
+}
+
+/// PC 터미널에서 열린 대화형 세션을 앱에서 끝낸다. 레지스트리·시작시각·cwd 가 모두 맞는 pid 에만 신호를 보낸다.
+pub async fn session_end_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
+    let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
+    let ended = tokio::task::spawn_blocking(move || {
+        let e = awb_core::live::find_live(&session_id)?;
+        // 다른 프로젝트의 세션을 이 경로로 끄지 못하게
+        if !e.cwd.as_deref().is_some_and(|c| awb_core::live::same_dir(c, &proj.path)) { return None; }
+        awb_core::live::terminate(e.pid, &e.proc_start, awb_core::live::proc_lstart).map(|ended| (ended, e.pid))
+    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (ended, pid) = ended.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "ended": ended, "pid": pid })))
 }
 
 #[derive(serde::Deserialize)]
@@ -439,8 +576,15 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/preflight", get(preflight_handler))
         .route("/push/register", post(push_register_handler))
         .route("/sessions/{project}", get(sessions_handler))
+        .route("/sessions/{project}/{session_id}/end", post(session_end_handler))
+        .route("/sessions/{project}/{session_id}/meta", post(session_meta_handler))
         .route("/transcript/{project}/{session_id}", get(transcript_handler))
         .route("/info", get(info_handler))
+        .route("/resume-at-reset/{project}", get(resume_get_handler).post(resume_set_handler).delete(resume_delete_handler))
+        .route("/git/{project}/commit", post(git_commit_handler))
+        .route("/git/{project}/push", post(git_push_handler))
+        .route("/git/{project}/pr", post(git_pr_handler))
+        .route("/git/{project}/draft", get(git_draft_handler))
         // 이미지 업로드: 기본 body 한도(2MB)를 사진 크기에 맞게 상향
         .route("/upload", post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)))
         .layer(from_fn_with_state(state.devices.clone(), crate::auth::require_token));
@@ -481,6 +625,8 @@ mod tests {
             perm_secret: "test-perm-secret".to_string(),
             base_url: "http://127.0.0.1:0".to_string(),
             started_at: 0,
+            rate_limit: Default::default(),
+            resume: crate::resume::ResumeStore::load(&std::env::temp_dir().join("awb_routes_test_resume.json").to_string_lossy().to_string()),
         }
     }
 
@@ -548,7 +694,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         let id = id.expect("pending에 요청이 나타나야 함");
-        assert!(state.perms.answer(&id, true));
+        assert!(state.perms.answer(&id, true, false, None));
         let res = req.await.unwrap().unwrap();
         assert_eq!(res.0["allow"], true);
         // 잘못된 시크릿은 401
@@ -559,6 +705,83 @@ mod tests {
             Json(crate::routes::PermRequestBody { project: "p".into(), tool_name: "t".into(), input: serde_json::json!({}) }),
         ).await;
         assert!(matches!(e, Err(StatusCode::UNAUTHORIZED)));
+    }
+
+    #[tokio::test]
+    async fn permission_request_skips_phone_for_session_allowed_tool() {
+        let devices_path = tmp("awb_routes_devices_perm_sess.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        let log = tmp("awb_routes_perm_sess.log");
+        std::fs::write(&log, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid-perm\"}\n").unwrap();
+        state.runs.insert("run-perm", crate::runreg::RunMeta { log, pgid: 0, workdir: "/tmp".into(), project: "psess".into(), notified: false, fork_of: None });
+        let request = |tool: &'static str| {
+            let st = state.clone();
+            tokio::spawn(async move {
+                let mut headers = axum::http::HeaderMap::new();
+                headers.insert("authorization", "Bearer test-perm-secret".parse().unwrap());
+                crate::routes::permission_request_handler(axum::extract::State(st), headers,
+                    Json(crate::routes::PermRequestBody { project: "psess".into(), tool_name: tool.into(), input: serde_json::json!({}) })).await
+            })
+        };
+        async fn wait_pending(st: &AppState) -> String {
+            for _ in 0..50 {
+                if let Some((id, _, _)) = st.perms.pending_for("psess").into_iter().next() { return id; }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!("pending에 요청이 나타나야 함");
+        }
+        let first = request("Bash");
+        let id = wait_pending(&state).await;
+        assert!(state.perms.answer(&id, true, true, None));
+        assert_eq!(first.await.unwrap().unwrap().0["allow"], true);
+        // 같은 세션·같은 툴: 폰에 묻지 않고 바로 허용
+        let again = tokio::time::timeout(std::time::Duration::from_secs(2), request("Bash")).await
+            .expect("세션 허용된 툴은 대기 없이 돌아와야 함").unwrap().unwrap();
+        assert_eq!(again.0["allow"], true);
+        // 다른 툴은 다시 묻고, 거절 사유가 그대로 돌아간다
+        let other = request("Write");
+        let id = wait_pending(&state).await;
+        assert!(state.perms.answer(&id, false, false, Some("쓰지 마".into())));
+        let res = other.await.unwrap().unwrap();
+        assert_eq!(res.0["allow"], false);
+        assert_eq!(res.0["message"], "쓰지 마");
+    }
+
+    #[test]
+    fn new_session_ignores_stored_session() {
+        let devices_path = tmp("awb_routes_devices_newsess.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.sessions.record("newsess_demo", "old-sid", None);
+        assert_eq!(resolve_resume(&state, "newsess_demo", None, true), (None, None));
+        assert_eq!(resolve_resume(&state, "newsess_demo", None, false).0.as_deref(), Some("old-sid"));
+    }
+
+    #[tokio::test]
+    async fn active_run_reports_forked_session() {
+        let devices_path = tmp("awb_routes_devices_activefork.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.sessions.record("activefork_demo", "fork-sid", Some("term-sid"));
+        let res = active_run_handler(State(state), Path("activefork_demo".into())).await;
+        assert_eq!(res.0["run_id"], serde_json::Value::Null);
+        assert_eq!(res.0["session"], "fork-sid");
+        assert_eq!(res.0["forked_from"], "term-sid");
+    }
+
+    #[tokio::test]
+    async fn chat_rejects_unknown_permission_mode() {
+        let base = std::env::temp_dir().join("awb_mode_scan"); let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("demo"); std::fs::create_dir_all(&repo).unwrap();
+        std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "init"]).output().unwrap();
+        std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "remote", "add", "origin", "x"]).output().unwrap();
+        let devices_path = tmp("awb_routes_devices_mode.json"); let _ = std::fs::remove_file(&devices_path);
+        let mut state = test_state(base.to_str().unwrap(), &devices_path);
+        state.claude_bin = "/usr/bin/false".into(); // 검사가 빠져 실행까지 가도 실제 claude 는 돌지 않게
+        // 비슷하지만 다른 문자열이 전체 모드(중계 없음)로 새지 않아야 한다
+        for mode in ["bypass", "BypassPermissions", "bypassPermissions ", "", "dontAsk"] {
+            let body: ChatBody = serde_json::from_value(serde_json::json!({ "prompt": "hi", "mode": mode })).unwrap();
+            let r = chat_handler(axum::extract::State(state.clone()), Path("demo".into()), Json(body)).await;
+            assert!(matches!(r, Err((StatusCode::BAD_REQUEST, _))), "mode {mode:?} 는 400 이어야 함");
+        }
     }
 
     #[tokio::test]
@@ -697,6 +920,25 @@ mod tests {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(body["hostname"].as_str().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn info_has_rate_limit_once_ws_done_is_built() {
+        // QA #2: 앱은 done 을 받자마자 /info 를 읽는다 — 워처 틱 전이어도 한도가 실려 있어야 한다
+        let dir = std::env::temp_dir().join("awb_routes_done_rl"); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("r.log").to_string_lossy().to_string();
+        std::fs::write(&log, "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":1783508400},\"session_id\":\"s1\"}\n").unwrap();
+        std::fs::write(format!("{log}.done"), "1").unwrap();
+        let devices_path = tmp("awb_routes_devices_done_rl.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state("/tmp", &devices_path);
+        state.devices.add("tok-rl", "test-device");
+        let meta = crate::runreg::RunMeta { log, pgid: 0, workdir: dir.to_string_lossy().to_string(), project: "p".into(), notified: false, fork_of: None };
+        state.runs.insert("r", meta.clone());
+        crate::ws::finish(&state, &meta, "r", None);
+        let res = crate::routes::router(state).oneshot(Request::builder().uri("/info").header("authorization", "Bearer tok-rl").body(Body::empty()).unwrap()).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["rate_limit"]["status"], "rejected");
+        assert_eq!(body["rate_limit"]["project"], "p");
     }
 
     #[tokio::test]

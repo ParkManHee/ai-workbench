@@ -2,15 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
+  Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
@@ -18,12 +23,15 @@ import { router, useLocalSearchParams, Stack } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
-import { initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
-import type { ChatMsg, ChatState, PC, TranscriptMsg, WsEvent } from "../../src/lib/types";
+import { changedFilesLabel, initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
+import { rewriteBangCommand } from "../../src/lib/bang";
+import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { useTheme, type Theme } from "../../src/lib/theme";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
+import { TextSelectModal } from "../../src/components/TextSelectModal";
+import { GitSheet } from "../../src/components/GitSheet";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -35,6 +43,12 @@ const PROMPT_PRESETS = [
   "작업로그 갱신해줘",
   "/compact",
 ];
+
+/** epoch초 → 현지 HH:mm */
+function hhmm(sec: number) {
+  const d = new Date(sec * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 /** 데몬 트랜스크립트 항목 → 화면 채팅 메시지. role은 자유 문자열이라 user 외엔 assistant로 취급. */
 function toChatMsg(m: TranscriptMsg): ChatMsg {
@@ -50,6 +64,8 @@ interface DiffSummary {
   insertions: number;
   deletions: number;
   entries: DiffEntry[];
+  /** 이 요약을 만든 턴(run) — 없으면 작업트리 전체. 파일 diff 도 같은 기준으로 연다 */
+  run?: string;
 }
 
 export default function Chat() {
@@ -79,12 +95,15 @@ export default function Chat() {
     }),
     [t]
   );
-  const { project, pc: pcId, path, session } = useLocalSearchParams<{
+  const { project, pc: pcId, path, session, fresh } = useLocalSearchParams<{
     project: string;
     pc: string;
     path: string;
     session?: string;
+    fresh?: string;
   }>();
+  // "+ 새 대화" 로 열었으면 첫 전송만 새 세션 요청 — 없으면 서버가 저장된 마지막 세션을 잇는다
+  const newSessionRef = useRef(fresh === "1");
   // 실제로 이어 쓰는 세션 — 터미널에 열린 세션을 고르면 서버가 갈라(fork) 새 ID 로 쓰고 done 으로 알려준다
   const sidRef = useRef<string | undefined>(session);
   const [sid, setSid] = useState<string | undefined>(session);
@@ -97,14 +116,16 @@ export default function Chat() {
   const kbPad = kbVisible ? kbHeight : 0;
   // undefined = not checked yet, null = checked and no PC found (redirecting)
   const [pc, setPc] = useState<PC | null | undefined>(undefined);
+  const pcRef = useRef<PC | null>(null);
+  pcRef.current = pc ?? null;
   // initialChatState() has running:true by design (it's the state reset when a
   // run starts, per reduceEvent's tests); the idle screen before any send
   // should not show a "cancel"/disabled input, so start with running:false.
   const [chat, setChat] = useState<ChatState>(() => ({ ...initialChatState(), running: false }));
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState(false);
-  // 승인 모드: 툴 권한을 사전 허용 대신 폰으로 물어봄(허용/거부 버튼)
-  const [approval, setApproval] = useState(false);
+  // 권한 모드(claude --permission-mode) — 전체 외에는 claude 가 묻는 것을 폰으로 받는다
+  const [mode, setMode] = useState("auto");
   // plan 실행 완료 후 "이 계획대로 진행" 원탭 칩
   const [showPlanApprove, setShowPlanApprove] = useState(false);
   const planAtSendRef = useRef(false);
@@ -115,9 +136,24 @@ export default function Chat() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
+  const [selectText, setSelectText] = useState<string | null>(null);
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
+  const [denyReasons, setDenyReasons] = useState<Record<string, string>>({});
   const [diff, setDiff] = useState<DiffSummary | null>(null);
+  // 변경 파일 목록은 기본 접힘 — 펼쳐 두면 파일이 많을 때 답변을 화면 위로 밀어낸다
+  const [diffOpen, setDiffOpen] = useState(false);
+  // 마지막 run 기준 "이번 턴" / 작업트리 "전체". 턴 diff 는 끝 스냅샷이 찍힌 뒤(실행 종료 후)에만 있다
+  const diffScopeRef = useRef<"turn" | "all">("turn");
+  const lastRunRef = useRef<string | null>(null);
+  const [gitOpen, setGitOpen] = useState(false);
+  // 응답 대기 중 재탭 차단 — state 는 다음 렌더까지 반영되지 않아 ref 로 즉시 막는다
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  // 프리셋 칩은 입력칸 포커스 중에만 — 상시 노출하면 대화창을 가린다
+  const [inputFocused, setInputFocused] = useState(false);
+  // 대화창을 누르거나 끌면 입력칸만 남기고 접는다 — 컨트롤·프리셋·이어받기는 입력칸을 눌러야 편다
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   // 첨부 이미지(전송 전): 갤러리에서 선택, 업로드는 전송 시점에 수행(uri는 썸네일 표시용)
   const [images, setImages] = useState<{ uri: string; ext: string; base64: string }[]>([]);
@@ -135,6 +171,7 @@ export default function Chat() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const runIdRef = useRef<string | null>(null);
+  const bgDetachedRef = useRef(false);
   const doneRef = useRef(true); // true = no run currently in flight
   // 연속 재접속 한도 — 데이터 수신 시 리셋되므로 긴 실행 중 산발적 순단은 계속 복구된다.
   const MAX_RECONNECTS = 5;
@@ -176,6 +213,51 @@ export default function Chat() {
     };
   }, []);
 
+  // 백그라운드에선 WS 를 닫는다 — 데몬은 WS 가 붙어 있으면 "보는 중"으로 보고 진행·완료 푸시를 건너뛴다.
+  // 돌아오면 같은 run 에 offset=0 으로 재부착(끊김 재접속과 같은 경로)하고, 그새 끝났으면 서버 기록으로 맞춘다.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", async (st) => {
+      if (st === "background") {
+        const ws = wsRef.current;
+        if (!ws) return;
+        wsRef.current = null; // onclose 의 superseded 가드가 재접속·오류 표시를 막는다
+        ws.close();
+        bgDetachedRef.current = true;
+      } else if (st === "active" && bgDetachedRef.current) {
+        bgDetachedRef.current = false;
+        const p = pcRef.current;
+        if (!p || doneRef.current) return;
+        let runId = runIdRef.current;
+        try {
+          const ar = await makeClient(p.baseUrl, p.token).activeRun(project);
+          runId = ar.run_id ?? null;
+          // 백그라운드 중 끝난 fork 실행은 done 을 못 받았다 — 서버가 기록한 갈라진 세션으로 옮긴다
+          if (!runId && ar.session && ar.forked_from === sidRef.current) {
+            sidRef.current = ar.session;
+            setSid(ar.session);
+          }
+        } catch {
+          // 조회 실패 시 기억한 run 으로 시도 — 끝났으면 unknown run → 기존 스트림 포기 경로가 기록으로 전환
+        }
+        if (!runId) {
+          doneRef.current = true;
+          setChat((prev) => ({ ...prev, running: false }));
+          reloadTailAndPoll(p);
+          return;
+        }
+        reconnectsRef.current = 0;
+        setChat((prev) => {
+          const msgs = [...prev.messages];
+          if (msgs.at(-1)?.role === "assistant") msgs.pop(); // offset=0 재생이라 이중으로 붙지 않게
+          return { ...initialChatState(), messages: msgs };
+        });
+        connectWs(runId, p);
+      }
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
+
   // 키보드가 열리면 최신 메시지가 입력바에 가려지지 않게 맨아래로 스크롤.
   useEffect(() => {
     if (kbVisible) {
@@ -184,12 +266,49 @@ export default function Chat() {
     }
   }, [kbVisible]);
 
+  // 사용량 한도·이어가기 예약 — 한도는 run 로그에서만 바뀌므로 진입 시와 실행이 끝날 때 갱신
+  const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
+  const [reservation, setReservation] = useState<ResumeReservation | null>(null);
+  useEffect(() => {
+    if (!pc || chat.running) return;
+    const c = makeClient(pc.baseUrl, pc.token);
+    Promise.all([c.info(), c.resumeAtReset(project)])
+      .then(([info, r]) => {
+        setRateLimit(info.rate_limit ?? null);
+        setReservation(r);
+      })
+      .catch(() => {});
+  }, [pc, chat.running, project]);
+
+  async function reserveResume(rl: RateLimit) {
+    const sessionId = rl.session_id ?? sidRef.current;
+    if (!pc || !rl.resets_at || !sessionId) return;
+    const r: ResumeReservation = { session_id: sessionId, resets_at: rl.resets_at, mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    try {
+      await makeClient(pc.baseUrl, pc.token).setResumeAtReset(project, r);
+      setReservation(r);
+    } catch (e) {
+      Alert.alert("예약 실패", String(e));
+    }
+  }
+
+  async function cancelResume() {
+    if (!pc) return;
+    try {
+      await makeClient(pc.baseUrl, pc.token).cancelResumeAtReset(project);
+      setReservation(null);
+    } catch (e) {
+      Alert.alert("취소 실패", String(e));
+    }
+  }
+
   // 진행 중 실행(다른 기기/이전 세션에서 시작)에 attach — 취소 버튼이 동작하게 한다.
   async function attachActiveRun(p: PC) {
     try {
       const r = await makeClient(p.baseUrl, p.token).activeRun(project);
       if (r.run_id && doneRef.current) {
         runIdRef.current = r.run_id;
+        lastRunRef.current = r.run_id;
         setChat((prev) => ({ ...prev, running: true }));
       }
     } catch {
@@ -220,11 +339,31 @@ export default function Chat() {
     return () => clearInterval(iv);
   }, [pc, project]);
 
-  async function answerPermission(id: string, allow: boolean) {
+  async function copyText(text: string) {
+    try {
+      await Clipboard.setStringAsync(text);
+      if (Platform.OS === "android") ToastAndroid.show("복사됨", ToastAndroid.SHORT);
+    } catch {
+      // best-effort
+    }
+  }
+
+  function bubbleActions(role: ChatMsg["role"], text: string) {
+    setSheet({ title: role === "user" ? "내 메시지" : "답변", choices: [
+      { label: "전체 복사하기", onPress: () => copyText(text) },
+      // 시트가 닫히는 렌더가 먼저 커밋된 뒤 열어 Modal 두 개가 겹치지 않게 한다
+      { label: "부분만 복사하기", onPress: () => setTimeout(() => setSelectText(text), 0) },
+      { label: "입력창에 넣기", onPress: () => setPrompt(text) },
+      { label: "공유하기", onPress: () => { Share.share({ message: text }).catch(() => {}); } },
+    ] });
+  }
+
+  async function answerPermission(id: string, allow: boolean, forSession = false) {
     if (!pc) return;
     setPerms((prev) => prev.filter((p) => p.id !== id));
+    const reason = allow ? undefined : denyReasons[id]?.trim() || undefined;
     try {
-      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow);
+      await makeClient(pc.baseUrl, pc.token).permissionAnswer(id, allow, forSession, reason);
     } catch {
       // 실패 시 다음 폴에서 다시 나타난다
     }
@@ -244,6 +383,12 @@ export default function Chat() {
       { label: "Sonnet", onPress: () => setModel("sonnet") },
       { label: "Haiku", onPress: () => setModel("haiku") },
     ] });
+  }
+
+  function pickMode() {
+    setSheet({ title: "권한 모드", message: `현재: ${MODE_LABELS[mode]}`, choices:
+      Object.entries(MODE_LABELS).map(([m, label]) => ({ label, onPress: () => setMode(m) })),
+    });
   }
 
   function pickEffort() {
@@ -483,7 +628,10 @@ export default function Chat() {
   async function fetchDiff(p: PC) {
     if (!path) return;
     try {
-      const d: DiffSummary = await makeClient(p.baseUrl, p.token).diff(path);
+      const c = makeClient(p.baseUrl, p.token);
+      const run = diffScopeRef.current === "turn" && doneRef.current ? lastRunRef.current ?? undefined : undefined;
+      // 스냅샷이 없는 run(git 저장소 아님·이전 데몬)은 전체로 — 토글은 실제로 받은 쪽을 표시한다
+      const d: DiffSummary = run ? await c.diff(path, run).then((x) => ({ ...x, run }), () => c.diff(path)) : await c.diff(path);
       setDiff(d);
       setOpenDiffs({}); // 새 요약 기준으로 펼침 상태 초기화
     } catch {
@@ -504,7 +652,7 @@ export default function Chat() {
     }
     if (!pc || !path) return;
     try {
-      const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file);
+      const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file, diff?.run);
       setOpenDiffs((prev) => ({ ...prev, [file]: res.diff.trim() ? res.diff : "(표시할 diff 없음)" }));
     } catch {
       setOpenDiffs((prev) => ({ ...prev, [file]: "(diff 조회 실패)" }));
@@ -533,6 +681,7 @@ export default function Chat() {
 
   async function handleSend(overrideText?: string, overridePlan?: boolean) {
     if (!pc || !client || !project) return;
+    if (sendingRef.current) return;
     const planFlag = overridePlan ?? plan;
     const text = (overrideText ?? prompt).trim();
     if ((!text && images.length === 0) || uploading) return; // 실행 중에도 전송 허용(서버가 큐잉)
@@ -543,12 +692,24 @@ export default function Chat() {
       setSendError("이미지 정보가 유효하지 않습니다. 첨부를 ✕로 지우고 다시 선택해주세요.");
       return;
     }
+    sendingRef.current = true;
+    setSending(true);
+    // 탭 즉시 입력을 비워 반응을 보이고, 실패하면 복원한다(그 사이 새로 친 입력은 덮지 않음)
+    const sentPrompt = prompt;
+    const sentImages = images;
+    const restoreInput = () => {
+      setPrompt((cur) => (cur ? cur : sentPrompt));
+      setImages((cur) => (cur.length ? cur : sentImages));
+    };
+    setPrompt("");
+    setImages([]);
+    try {
     // 이미지 먼저 업로드 — 실패하면 입력을 유지한 채 전송 중단(부분 업로드로 실행하지 않음)
     const paths: string[] = [];
-    if (images.length > 0) {
+    if (sentImages.length > 0) {
       setUploading(true);
       try {
-        for (const im of images) paths.push((await client.upload(im.base64, im.ext)).path);
+        for (const im of sentImages) paths.push((await client.upload(im.base64, im.ext)).path);
       } catch (e) {
         if (isUnauthorized(e)) {
           await removePC(pc.id);
@@ -556,6 +717,7 @@ export default function Chat() {
           return;
         }
         console.log("[awb] upload failed:", e); // adb logcat(ReactNativeJS)에서 원인 확인용
+        restoreInput();
         setSendError(`이미지 업로드 실패: ${e instanceof Error ? e.message : String(e)}`);
         return;
       } finally {
@@ -563,19 +725,20 @@ export default function Chat() {
       }
     }
 
+    // 말풍선엔 사용자가 친 `!cmd` 원문, 서버엔 실행 지시로 변환한 프롬프트
+    const sendText = rewriteBangCommand(text);
     // 에이전트는 Read 도구로 Mac에 저장된 첨부 이미지를 본다
     const fullPrompt = paths.length
-      ? `${text}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
-      : text;
+      ? `${sendText}\n\n${paths.map((p) => `[첨부 이미지: ${p} — Read 도구로 확인]`).join("\n")}`
+      : sendText;
     const shown = paths.length ? `${text}${text ? "\n" : ""}🖼 이미지 ${paths.length}장` : text;
     const userMsg: ChatMsg = { role: "user", text: shown };
 
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, approval, model || undefined, effort || undefined);
-      setPrompt("");
-      setImages([]);
+      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined, newSessionRef.current);
+      newSessionRef.current = false;
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({
@@ -590,9 +753,11 @@ export default function Chat() {
       }
       stopPoll(); // the user's own run now drives the live view
       setDiff(null);
+      setDiffOpen(false);
       reconnectsRef.current = 0;
       setChat((prev) => ({ ...initialChatState(), messages: [...prev.messages, userMsg] }));
       runIdRef.current = res.run_id!;
+      lastRunRef.current = res.run_id!;
       connectWs(res.run_id!, pc);
     } catch (e) {
       if (isUnauthorized(e)) {
@@ -601,7 +766,12 @@ export default function Chat() {
         router.replace("/");
         return;
       }
+      restoreInput();
       setSendError("전송 실패. 다시 시도해주세요.");
+    }
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   }
 
@@ -629,7 +799,7 @@ export default function Chat() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
-      {sid && path ? (
+      {sid && path && controlsOpen ? (
         <View style={styles.resumeBar}>
           <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
           <Text style={styles.resumeCmd} selectable>
@@ -654,12 +824,38 @@ export default function Chat() {
           </Pressable>
         );
       })()}
+      {(() => {
+        // 리셋 시각이 지난 값은 낡은 상태 — 다음 run 이 새로 알려 줄 때까지 숨긴다
+        const rl = rateLimit?.resets_at && rateLimit.resets_at > Date.now() / 1000 ? rateLimit : null;
+        const limited = rl && rl.status !== "allowed" ? rl : null;
+        const canReserve = !reservation && !running && limited?.status === "rejected" && limited.project === project;
+        if (!limited && !reservation) return null;
+        return (
+          <View style={styles.limitBar}>
+            {limited ? (
+              <Text style={[styles.limitText, { color: limited.status === "rejected" ? "#d93025" : "#e8a33d" }]}>
+                {limited.status === "rejected" ? "⛔ 사용량 한도 도달" : "⚠ 사용량 한도 임박"} · 리셋 {hhmm(limited.resets_at!)}
+              </Text>
+            ) : null}
+            {reservation ? (
+              <Pressable style={styles.presetChip} onPress={cancelResume}>
+                <Text style={styles.presetChipText}>예약됨 {hhmm(reservation.resets_at + 60)} · 취소</Text>
+              </Pressable>
+            ) : canReserve ? (
+              <Pressable style={styles.presetChip} onPress={() => reserveResume(limited!)}>
+                <Text style={styles.presetChipText}>리셋 때 이어가기</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        );
+      })()}
       <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
         style={styles.list}
         contentContainerStyle={[styles.listContent, kbPad > 0 ? { paddingBottom: kbPad + 12 } : null]}
         scrollEventThrottle={100}
+        onTouchStart={() => setControlsOpen(false)}
         onScroll={(e) => {
           const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
           scrollYRef.current = contentOffset.y;
@@ -719,7 +915,11 @@ export default function Chat() {
             );
           }
           return (
-            <View key={i} style={m.role === "user" ? styles.userBubble : styles.assistantBubble}>
+            <Pressable
+              key={i}
+              style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
+              onLongPress={hasText ? () => bubbleActions(m.role, m.text) : undefined}
+            >
               {hasTools ? (
                 <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
                   <Text style={styles.toolButtonText}>
@@ -741,14 +941,14 @@ export default function Chat() {
                   <Markdown style={mdStyles}>{m.text}</Markdown>
                 )
               ) : null}
-            </View>
+            </Pressable>
           );
         })}
 
         {!chat.running && chat.verdict ? (
           <View style={styles.verdictRow}>
             <Text style={styles.verdictText}>{verdictLabel(chat.verdict)}</Text>
-            <Text style={styles.changedFiles}>변경 파일 {chat.changedFiles}개</Text>
+            <Text style={styles.changedFiles}>{changedFilesLabel(chat.changedFiles, diff)}</Text>
           </View>
         ) : null}
 
@@ -756,10 +956,22 @@ export default function Chat() {
 
         {diff ? (
           <View style={styles.diffBox}>
-            <Text style={styles.diffTitle}>
-              git 변경: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions}
-            </Text>
-            {diff.entries.map((e, i) => (
+            <Pressable onPress={() => setDiffOpen((v) => !v)}>
+              <Text style={styles.diffTitle}>
+                git 변경 · {diff.run ? "이번 턴" : "전체"}: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
+              </Text>
+            </Pressable>
+            {diffOpen && lastRunRef.current && !chat.running ? (
+              <View style={styles.optionRow}>
+                {(["turn", "all"] as const).map((sc) => (
+                  <Pressable key={sc} style={(diff.run ? "turn" : "all") === sc ? styles.optionChip : styles.presetChip}
+                    onPress={() => { diffScopeRef.current = sc; if (pc) fetchDiff(pc); }}>
+                    <Text style={(diff.run ? "turn" : "all") === sc ? styles.optionChipText : styles.presetChipText}>{sc === "turn" ? "이번 턴" : "전체"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            {diffOpen ? diff.entries.map((e, i) => (
               <View key={i}>
                 <Pressable onPress={() => toggleFileDiff(e.path)}>
                   <Text style={styles.diffEntry}>
@@ -772,7 +984,7 @@ export default function Chat() {
                   </Text>
                 ) : null}
               </View>
-            ))}
+            )) : null}
           </View>
         ) : null}
       </ScrollView>
@@ -794,19 +1006,29 @@ export default function Chat() {
             <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
             <View style={styles.permButtons}>
               <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true)}>
-                <Text style={styles.buttonText}>허용</Text>
+                <Text style={styles.buttonText}>이번만</Text>
+              </Pressable>
+              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true, true)}>
+                <Text style={styles.buttonText}>세션 동안</Text>
               </Pressable>
               <Pressable style={styles.permDeny} onPress={() => answerPermission(pm.id, false)}>
-                <Text style={styles.buttonText}>거부</Text>
+                <Text style={styles.buttonText}>거절</Text>
               </Pressable>
             </View>
+            <TextInput
+              style={styles.permReason}
+              value={denyReasons[pm.id] ?? ""}
+              onChangeText={(v) => setDenyReasons((prev) => ({ ...prev, [pm.id]: v }))}
+              placeholder="거절 사유(선택) — claude 에게 전달"
+              placeholderTextColor={t.placeholder}
+            />
           </View>
         ))}
-        {/* 실행 종료 + 변경 있음 → 커밋 원탭 */}
+        {/* 실행 종료 + 변경 있음 → 커밋·푸시·PR 시트 */}
         {!chat.running && diff && diff.files > 0 ? (
           <View style={styles.optionRow}>
-            <Pressable style={styles.optionChip} onPress={() => handleSend("변경사항을 확인해서 적절한 메시지로 커밋하고 푸시해줘.")}>
-              <Text style={styles.optionChipText}>📦 커밋+푸시</Text>
+            <Pressable style={styles.optionChip} onPress={() => setGitOpen(true)}>
+              <Text style={styles.optionChipText}>📦 커밋·푸시·PR</Text>
             </Pressable>
           </View>
         ) : null}
@@ -837,7 +1059,7 @@ export default function Chat() {
           );
         })()}
         {/* 프리셋: 입력이 비어 있을 때만 — 탭하면 입력창에 채워져 수정 후 전송 */}
-        {!prompt && !chat.running && images.length === 0 ? (
+        {controlsOpen && inputFocused && !prompt && !chat.running && images.length === 0 ? (
           <View style={styles.optionRow}>
             {PROMPT_PRESETS.map((p, i) => (
               <Pressable key={i} style={styles.presetChip} onPress={() => setPrompt(p)}>
@@ -866,7 +1088,10 @@ export default function Chat() {
         ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
           {/* 컨트롤과 입력칸을 두 줄로 — 한 줄이면 컨트롤이 늘 때 입력칸 폭이 0 이 되고 전송 버튼이 화면 밖으로 밀린다 */}
+          {controlsOpen || running ? (
           <View style={styles.controlRow}>
+          {controlsOpen ? (
+          <>
           <View style={styles.planRow}>
           <Text style={styles.planLabel}>plan</Text>
           <Switch
@@ -875,24 +1100,23 @@ export default function Chat() {
             disabled={running}
             style={{ transform: [{ scale: 0.85 }] }}
           />
-          <Pressable onPress={pickModel}>
-            <Text style={[styles.planLabel, model ? { color: t.accent, fontWeight: "700" } : null]}>
+        </View>
+          {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
+          <Pressable style={styles.presetChip} onPress={pickModel}>
+            <Text style={[styles.presetChipText, model ? { color: t.accent, fontWeight: "700" } : null]}>
               {model || "모델"}
             </Text>
           </Pressable>
-          <Pressable onPress={pickEffort}>
-            <Text style={[styles.planLabel, effort ? { color: t.accent, fontWeight: "700" } : null]}>
+          <Pressable style={styles.presetChip} onPress={pickEffort}>
+            <Text style={[styles.presetChipText, effort ? { color: t.accent, fontWeight: "700" } : null]}>
               {effort || "effort"}
             </Text>
           </Pressable>
-          <Text style={styles.planLabel}>승인</Text>
-          <Switch
-            value={approval}
-            onValueChange={setApproval}
-            disabled={running}
-            style={{ transform: [{ scale: 0.85 }] }}
-          />
-        </View>
+          <Pressable style={[styles.presetChip, running ? { opacity: 0.5 } : null]} onPress={pickMode} disabled={running}>
+            <Text style={styles.presetChipText}>
+              권한 <Text style={{ color: t.accent, fontWeight: "700" }}>{MODE_LABELS[mode]}</Text>
+            </Text>
+          </Pressable>
         <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
           <Text style={styles.attachButtonText}>🖼</Text>
         </Pressable>
@@ -902,36 +1126,48 @@ export default function Chat() {
         <Pressable style={styles.attachButton} onPress={toggleMic}>
           <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
         </Pressable>
+          </>
+          ) : null}
+        {/* 취소는 컨트롤 줄에 — 입력 줄에 끼우면 전송 버튼이 밀려 그 자리에 취소가 와 오터치된다 */}
+        {running ? (
+          <Pressable style={styles.cancelButton} onPress={handleCancel}>
+            <Text style={styles.cancelButtonText}>취소</Text>
+          </Pressable>
+        ) : null}
           </View>
+          ) : null}
           <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
           multiline
           value={prompt}
           onChangeText={setPrompt}
+          onFocus={() => { setInputFocused(true); setControlsOpen(true); }}
+          onPressIn={() => setControlsOpen(true)}
+          onBlur={() => setInputFocused(false)}
           editable={!uploading}
           placeholder="메시지를 입력하세요"
           placeholderTextColor={t.placeholder}
         />
         <Pressable
-          style={styles.sendButton}
+          style={[styles.sendButton, sending ? { opacity: 0.5 } : null]}
           onPress={() => handleSend()}
-          disabled={(!prompt.trim() && images.length === 0) || uploading}
+          disabled={(!prompt.trim() && images.length === 0) || uploading || sending}
         >
-          <Text style={styles.buttonText}>{uploading ? "업로드…" : running ? "큐잉" : "전송"}</Text>
+          <Text style={styles.buttonText}>{uploading ? "업로드…" : sending ? "전송중…" : running ? "큐잉" : "전송"}</Text>
         </Pressable>
-        {running ? (
-          <Pressable style={styles.cancelButton} onPress={handleCancel}>
-            <Text style={styles.buttonText}>취소</Text>
-          </Pressable>
-        ) : null}
           </View>
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
+      <GitSheet pc={pc} project={project} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
+      <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );
 }
+
+// 값은 서버 PERMISSION_MODES(claude --permission-mode)와 같아야 한다
+const MODE_LABELS: Record<string, string> = { default: "감독", acceptEdits: "편집 자동", auto: "Auto", bypassPermissions: "전체" };
 
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
@@ -995,6 +1231,20 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     color: t.chipText,
     fontSize: 12,
   },
+  limitBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+  },
+  limitText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
   todoBar: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: t.border,
@@ -1039,6 +1289,15 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 18,
     paddingVertical: 8,
+  },
+  permReason: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 12,
+    color: t.text,
   },
   permDeny: {
     backgroundColor: "#c0392b",
@@ -1164,6 +1423,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: t.border,
+    // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
+    backgroundColor: t.box,
   },
   controlRow: {
     flexDirection: "row",
@@ -1248,8 +1509,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   cancelButton: {
     backgroundColor: "#c0392b",
     borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  cancelButtonText: {
+    color: "white",
+    fontWeight: "600",
+    fontSize: 12,
   },
   buttonText: {
     color: "white",

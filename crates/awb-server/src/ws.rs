@@ -19,6 +19,14 @@ pub fn split_new_lines(buf: &str) -> (Vec<String>, usize) {
     (lines, consumed)
 }
 
+/// stream_loop 의 모든 return 경로에서 연결 수를 되돌리려고 Drop 에 맡긴다.
+struct Attached(crate::runreg::RunRegistry, String);
+impl Drop for Attached {
+    fn drop(&mut self) {
+        self.0.detach(&self.1);
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct StreamQuery {
     #[serde(default)]
@@ -60,6 +68,9 @@ async fn stream_loop(
             return;
         }
     };
+    // shortcut: 끊긴 연결은 다음 send/ping(최대 20초) 때 감지돼 그동안 진행 푸시가 빠진다, 기기에서 공백이 보이면 올린다
+    st.runs.attach(&run_id);
+    let _attached = Attached(st.runs.clone(), run_id.clone());
     let mut pending = String::new();
     let mut session_id: Option<String> = None;
     // keepalive: 폰 절전/NAT가 유휴 연결을 끊지 않도록 주기적으로 ping 프레임 전송
@@ -91,24 +102,21 @@ async fn stream_loop(
             }
         }
         if chunk.done {
-            let status = awb_core::runlog::run_status(&meta.log, &meta.workdir); // 락 해제 포함
-            let done = crate::streamevt::Event::Done {
-                exit: status.exit_code,
-                verdict: status.verdict.clone(),
-                changed_files: status.changed_files,
-                session_id: session_id.clone(),
-            };
-            // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
-            // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.
-            // send 이전에 게이트를 닫아(mark_notified) 워처가 끼어들 여지를 없앤다.
-            st.runs.mark_notified(&run_id); // WS로 전달 예정 → 이후 푸시 스킵(게이트를 먼저 닫음)
+            let done = finish(&st, &meta, &run_id, session_id.clone());
             let _ = socket
                 .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
                 .await;
             let _ = socket.send(Message::Close(None)).await; // 정상 종료 프레임(클라이언트 측 abnormal-closure 방지)
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        // 소켓을 읽지 않으면 클라이언트의 close 를 다음 send(최대 20초 ping)에야 알아 그동안 푸시가 억제된다
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1000)) => {}
+            msg = socket.recv() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => {}
+            },
+        }
         since_traffic += 1;
         if since_traffic >= PING_EVERY_SECS {
             since_traffic = 0;
@@ -116,6 +124,23 @@ async fn stream_loop(
                 return; // 상대가 죽은 연결 — 정리
             }
         }
+    }
+}
+
+/// done 이벤트를 만들기 전에 끝내야 할 상태 반영 — 반환값을 보낸 직후 앱이 /info 를 다시 읽으므로
+/// 한도 저장은 여기서 해야 한다(1.5초 주기 워처에 맡기면 앱 조회가 먼저 와 배지가 안 뜬다).
+pub(crate) fn finish(st: &AppState, meta: &crate::runreg::RunMeta, run_id: &str, session_id: Option<String>) -> crate::streamevt::Event {
+    let status = awb_core::runlog::run_status(&meta.log, &meta.workdir); // 락 해제 포함
+    crate::push::record_rate_limit(st, &meta.project, &awb_core::runlog::read_log(&meta.log, 0).text);
+    // 순서 중요: socket.send(...).await 지점에서 태스크가 잠깐 양보하는 동안
+    // 워처(push.rs)가 should_push(=mark_notified)를 먼저 통과해 이중 발송할 수 있다.
+    // send 이전에 게이트를 닫아(mark_notified) 워처가 끼어들 여지를 없앤다.
+    st.runs.mark_notified(run_id); // WS로 전달 예정 → 이후 푸시 스킵(게이트를 먼저 닫음)
+    crate::streamevt::Event::Done {
+        exit: status.exit_code,
+        verdict: status.verdict,
+        changed_files: status.changed_files,
+        session_id,
     }
 }
 

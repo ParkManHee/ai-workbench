@@ -34,6 +34,11 @@ pub fn status(workdir: &str) -> Option<LockInfo> {
     serde_json::from_str(&s).ok()
 }
 
+/// 살아 있는 소유자가 락을 잡고 있는가 — 데몬의 git 쓰기 작업이 실행 중인 턴과 겹치지 않게 확인한다.
+pub fn held(workdir: &str) -> bool {
+    status(workdir).is_some_and(|c| pgid_alive(c.pgid))
+}
+
 pub fn acquire(workdir: &str, info: &LockInfo) -> Result<(), LockInfo> {
     let dir = lock_dir(workdir);
     if let Some(parent) = dir.parent() { let _ = fs::create_dir_all(parent); }

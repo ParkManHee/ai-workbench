@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { initialChatState, reduceEvent, verdictLabel } from "./events";
+import { changedFilesLabel, initialChatState, reduceEvent, verdictLabel } from "./events";
 describe("reduceEvent", () => {
   it("accumulates tokens into current assistant message", () => {
     let s = initialChatState();
@@ -18,5 +18,12 @@ describe("verdictLabel", () => {
     expect(verdictLabel("success")).toMatch(/완료/);
     expect(verdictLabel("failed")).toMatch(/실패/);
     expect(verdictLabel("success(무변경)")).toMatch(/변경 없음/);
+  });
+});
+describe("changedFilesLabel", () => {
+  it("턴 diff 가 있으면 그 개수, 없으면 작업트리 전체 개수", () => {
+    expect(changedFilesLabel(1, { files: 0, run: "r1" })).toBe("이번 턴 변경 0개");
+    expect(changedFilesLabel(1, { files: 1 })).toBe("변경 파일 1개");
+    expect(changedFilesLabel(1, null)).toBe("변경 파일 1개");
   });
 });

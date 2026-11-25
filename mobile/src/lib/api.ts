@@ -1,4 +1,4 @@
-import type { Project, Preflight, SessionInfo, TranscriptMsg } from "./types";
+import type { Project, Preflight, RateLimit, ResumeReservation, SessionInfo, TranscriptMsg } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -26,14 +26,31 @@ type F = typeof fetch;
 export function makeClient(baseUrl: string, token: string, f: F = fetch) {
   const h = { Authorization: `Bearer ${token}` };
   const jget = async (p: string) => { const r = await f(`${baseUrl}${p}`, { headers: h } as any); if (!(r as any).ok) throw new HttpError((r as any).status, p); return (r as any).json(); };
+  // 실패 시 서버가 돌려준 git/gh 출력을 메시지로 — 폰 토스트에 그대로 보인다
+  const jpost = async (p: string, body: unknown) => {
+    const r = await f(`${baseUrl}${p}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
+    if (!(r as any).ok) {
+      const e = new HttpError((r as any).status, p);
+      e.message = (await (r as any).text()) || e.message;
+      throw e;
+    }
+    return (r as any).json();
+  };
   return {
     projects: (): Promise<Project[]> => jget("/projects"),
     preflight: (): Promise<Preflight> => jget("/preflight"),
-    diff: (path: string) => jget(`/diff?path=${encodeURIComponent(path)}`),
-    diffFile: (path: string, file: string): Promise<{ file: string; diff: string }> =>
-      jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`),
+    // run 을 주면 그 턴(시작·끝 스냅샷 사이)의 변경만
+    diff: (path: string, run?: string) => jget(`/diff?path=${encodeURIComponent(path)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
+    diffFile: (path: string, file: string, run?: string): Promise<{ file: string; diff: string }> =>
+      jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
+    gitDraft: (project: string): Promise<{ message: string; on_default: boolean }> => jget(`/git/${encodeURIComponent(project)}/draft`),
+    gitCommit: (project: string, message: string, branch?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/commit`, branch ? { message, branch } : { message }),
+    gitPush: (project: string): Promise<{ output: string }> => jpost(`/git/${encodeURIComponent(project)}/push`, {}),
+    gitPr: (project: string, title: string, body?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/pr`, { title, body: body ?? "" }),
     status: (runId: string) => jget(`/status/${runId}`),
-    activeRun: (project: string): Promise<{ run_id: string | null; queued: number }> =>
+    activeRun: (project: string): Promise<{ run_id: string | null; queued: number; session?: string | null; forked_from?: string | null }> =>
       jget(`/runs/active/${encodeURIComponent(project)}`),
     permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
       jget(`/permission/pending/${encodeURIComponent(project)}`),
@@ -43,18 +60,33 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       const r = await f(`${baseUrl}/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: h } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, "/devices/revoke");
     },
-    permissionAnswer: (id: string, allow: boolean) =>
-      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow }) } as any),
-    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number }> => jget("/info"),
-    sessions: (project: string): Promise<SessionInfo[]> => jget(`/sessions/${encodeURIComponent(project)}`),
+    permissionAnswer: (id: string, allow: boolean, forSession = false, message?: string) =>
+      f(`${baseUrl}/permission/answer`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ id, allow, for_session: forSession, message }) } as any),
+    info: (): Promise<{ hostname: string; version?: string; api_version?: number; uptime_secs?: number; active_runs?: number; rate_limit?: RateLimit | null }> => jget("/info"),
+    resumeAtReset: (project: string): Promise<ResumeReservation | null> => jget(`/resume-at-reset/${encodeURIComponent(project)}`),
+    setResumeAtReset: async (project: string, r: ResumeReservation) => {
+      const p = `/resume-at-reset/${encodeURIComponent(project)}`;
+      const res = await f(`${baseUrl}${p}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(r) } as any);
+      if (!(res as any).ok) throw new HttpError((res as any).status, p);
+    },
+    cancelResumeAtReset: (project: string) => f(`${baseUrl}/resume-at-reset/${encodeURIComponent(project)}`, { method: "DELETE", headers: h } as any),
+    sessions: (project: string, opts: { q?: string; archived?: boolean } = {}): Promise<SessionInfo[]> => {
+      const qs = [opts.q ? `q=${encodeURIComponent(opts.q)}` : "", opts.archived ? "archived=1" : ""].filter(Boolean).join("&");
+      return jget(`/sessions/${encodeURIComponent(project)}${qs ? `?${qs}` : ""}`);
+    },
+    /** name: null·빈 문자열이면 이름 제거, 키를 빼면 그대로 */
+    sessionMeta: (project: string, sessionId: string, body: { name?: string | null; archived?: boolean }): Promise<{ name?: string; archived?: boolean }> =>
+      jpost(`/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/meta`, body),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
     transcriptTail: (project: string, sessionId: string): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, approval?: boolean, model?: string, effort?: string) => {
-      const body: Record<string, unknown> = { prompt, plan, approval: !!approval };
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, mode?: string, model?: string, effort?: string, newSession?: boolean) => {
+      const body: Record<string, unknown> = { prompt, plan };
+      if (newSession) body.new_session = true;
+      if (mode) body.mode = mode;
       if (model) body.model = model;
       if (effort) body.effort = effort;
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
@@ -63,6 +95,12 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
+    endSession: async (project: string, sessionId: string): Promise<{ ended: boolean; pid: number }> => {
+      const p = `/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/end`;
+      const r = await f(`${baseUrl}${p}`, { method: "POST", headers: h } as any);
+      if (!(r as any).ok) throw new HttpError((r as any).status, p);
+      return (r as any).json();
+    },
     /** 첨부 이미지 업로드(base64 → raw bytes) → Mac 저장 절대경로를 반환받는다.
      * expo 전역 fetch(WinterCG)는 RN식 {uri,...} FormData 파트를 지원하지 않고
      * ("unsupported FormData part implementation"), 로컬 uri의 blob() 읽기도 안 되므로

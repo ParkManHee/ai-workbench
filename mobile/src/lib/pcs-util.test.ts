@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { upsertPC, pcId } from "./pcs-util";
+import { upsertPC, pcId, presenceLabel } from "./pcs-util";
 import type { PC } from "./types";
 
 const mk = (baseUrl: string, label = "Mac"): PC => ({ id: pcId(baseUrl), label, baseUrl, token: "tok" });
@@ -33,5 +33,20 @@ describe("upsertPC", () => {
     const list: PC[] = [mk("http://1.2.3.4:8787", "A")];
     upsertPC(list, mk("http://5.6.7.8:8787", "B"));
     expect(list).toHaveLength(1);
+  });
+});
+
+describe("presenceLabel", () => {
+  it("online ignores lastSeen", () => {
+    expect(presenceLabel(true, 0, 1e9)).toBe("🟢 온라인");
+  });
+  it("offline shows minutes/hours since last response, or none", () => {
+    const now = 10_000_000;
+    expect(presenceLabel(false, now - 3 * 60000, now)).toBe("⚫ 오프라인 · 마지막 응답 3분 전");
+    expect(presenceLabel(false, now - 125 * 60000, now)).toBe("⚫ 오프라인 · 마지막 응답 2시간 전");
+    expect(presenceLabel(false, undefined, now)).toBe("⚫ 오프라인 · 응답 없음");
+  });
+  it("not yet checked this launch is neutral even with a stored lastSeen", () => {
+    expect(presenceLabel(undefined, 0, 1e9)).toBe("확인 중…");
   });
 });
