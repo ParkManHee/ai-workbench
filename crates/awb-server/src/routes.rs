@@ -58,16 +58,27 @@ pub struct ProjectDto {
     pub badge: Option<awb_core::worklog::Badge>,
     /// "working"(🟢 에이전트 동작중) | "waiting"(🔴 질문 대기) | None
     pub agent_status: Option<String>,
+    /// 앱에 보이는 세션(/sessions 와 같은 기준, 보관 제외) — 프로젝트 화면이 프로젝트 아래에 붙인다. 옛 앱은 이 필드를 무시한다
+    pub sessions: Vec<crate::sessions::SessionRow>,
 }
 
+/// 트랜스크립트를 프로젝트 수만큼 읽어 수 초 걸릴 수 있다 — 런타임 워커를 막지 않게 블로킹 풀에서.
 pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto>> {
-    let projects = awb_core::scan::scan_roots(&st.roots);
-    let dtos = projects.into_iter().map(|p| {
-        let badge = awb_core::worklog::badge_for(&p.name);
-        let agent_status = awb_core::transcript::project_status(&awb_core::transcript::project_slug(&p.path));
-        ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status }
-    }).collect();
+    let dtos = tokio::task::spawn_blocking(move || {
+        project_dtos(&st, &awb_core::transcript::projects_root(), &awb_core::live::live_interactive_ids())
+    }).await.unwrap_or_default();
     Json(dtos)
+}
+
+fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashSet<String>) -> Vec<ProjectDto> {
+    awb_core::scan::scan_roots(&st.roots).into_iter().map(|p| {
+        let badge = awb_core::worklog::badge_for(&p.name);
+        let slug = awb_core::transcript::project_slug(&p.path);
+        let agent_status = awb_core::transcript::project_status(&slug);
+        let list = awb_core::transcript::list_open_sessions_in(&format!("{tx_root}/{slug}"), live_ids);
+        let sessions = crate::sessions::filter_rows(list, &st.sessions.metas(&p.name), None, false);
+        ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status, sessions }
+    }).collect()
 }
 
 #[derive(serde::Deserialize)]
@@ -464,9 +475,7 @@ pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>, Query(sq): Query<SessionsQuery>) -> Result<Json<Vec<crate::sessions::SessionRow>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    // 종료된 터미널 세션은 숨긴다 — 열린 터미널 세션과 앱이 이어 쓰는 대화만
-    let list = awb_core::transcript::list_sessions(&awb_core::transcript::project_slug(&proj.path));
-    let list = list.into_iter().filter(|s| s.live || s.app).collect();
+    let list = awb_core::transcript::list_open_sessions(&awb_core::transcript::project_slug(&proj.path));
     Ok(Json(crate::sessions::filter_rows(list, &st.sessions.metas(&project), sq.q.as_deref(), sq.archived == 1)))
 }
 
@@ -840,6 +849,40 @@ mod tests {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8_lossy(&bytes);
         assert!(body.contains("demo"));
+    }
+
+    #[test]
+    fn projects_carry_visible_sessions_per_project() {
+        // 세션 있는 프로젝트 · 종료된 터미널 세션만 있는 프로젝트 · 보관된 세션만 있는 프로젝트
+        let base = std::env::temp_dir().join("awb_proj_sessions"); let _ = std::fs::remove_dir_all(&base);
+        let tx_root = base.join("tx");
+        let line = |ep: &str| format!("{{\"type\":\"user\",\"entrypoint\":\"{ep}\",\"message\":{{\"role\":\"user\",\"content\":\"질문\"}}}}\n");
+        for (name, files) in [
+            ("pg-has", vec![("s-app", "sdk-cli"), ("s-live", "cli"), ("s-dead", "cli")]),
+            ("pg-none", vec![("s-dead2", "cli")]),
+            ("pg-archived", vec![("s-arch", "sdk-cli")]),
+        ] {
+            let repo = base.join("repos").join(name); std::fs::create_dir_all(&repo).unwrap();
+            std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "init"]).output().unwrap();
+            std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "remote", "add", "origin", "x"]).output().unwrap();
+            let real = std::fs::canonicalize(&repo).unwrap();
+            let dir = tx_root.join(awb_core::transcript::project_slug(real.to_str().unwrap()));
+            std::fs::create_dir_all(&dir).unwrap();
+            for (sid, ep) in files { std::fs::write(dir.join(format!("{sid}.jsonl")), line(ep)).unwrap(); }
+        }
+        let devices_path = tmp("awb_routes_devices_proj_sessions.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state(base.join("repos").to_str().unwrap(), &devices_path);
+        state.sessions.set_meta("pg-archived", "s-arch", None, Some(true)).unwrap();
+        let live: std::collections::HashSet<String> = ["s-live".to_string()].into();
+        let v = serde_json::to_value(super::project_dtos(&state, tx_root.to_str().unwrap(), &live)).unwrap();
+        let ids = |name: &str| -> Vec<String> {
+            let p = v.as_array().unwrap().iter().find(|p| p["name"] == name).unwrap_or_else(|| panic!("{name} 없음: {v}"));
+            let mut ids: Vec<String> = p["sessions"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap().to_string()).collect();
+            ids.sort(); ids
+        };
+        assert_eq!(ids("pg-has"), vec!["s-app", "s-live"], "열린 터미널·앱 대화만, 종료된 터미널 세션은 빠진다");
+        assert_eq!(ids("pg-none"), Vec::<String>::new());
+        assert_eq!(ids("pg-archived"), Vec::<String>::new(), "보관된 세션은 0개로 친다");
     }
 
     #[tokio::test]

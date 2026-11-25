@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, StyleSheet, Text, View } from "react-native";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { PC } from "../src/lib/types";
 import { getPC, removePC } from "../src/store/pcs";
-import { useTheme, type Theme } from "../src/lib/theme";
+import { font, space, useTheme, type Theme } from "../src/lib/theme";
+import { Button, EmptyState, Icon, ListRow } from "../src/components/ui";
 
 interface DeviceDto { id: string; label: string; paired_at: number }
 
@@ -58,23 +59,23 @@ export default function Devices() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: `페어링 기기 — ${pc?.label ?? ""}` }} />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <View style={styles.error}>
+          <Icon name="error-outline" size={16} color={t.danger} />
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
       <FlatList
         data={devices}
         keyExtractor={(d) => d.id}
-        ListEmptyComponent={<Text style={styles.empty}>페어링된 기기가 없습니다.</Text>}
+        contentContainerStyle={{ flexGrow: 1 }}
+        ListEmptyComponent={<EmptyState icon="devices" title="페어링된 기기가 없습니다." />}
         renderItem={({ item }) => (
-          <View style={styles.row}>
-            <View style={styles.info}>
-              <Text style={styles.label}>{item.label}</Text>
-              <Text style={styles.meta}>
-                {item.id} · {new Date(item.paired_at * 1000).toLocaleDateString("ko-KR")} 페어링
-              </Text>
-            </View>
-            <Pressable style={styles.revoke} onPress={() => confirmRevoke(item)}>
-              <Text style={styles.revokeText}>회수</Text>
-            </Pressable>
-          </View>
+          <ListRow
+            title={item.label}
+            subtitle={`${item.id} · ${new Date(item.paired_at * 1000).toLocaleDateString("ko-KR")} 페어링`}
+            right={<Button title="회수" variant="dangerOutline" size="sm" onPress={() => confirmRevoke(item)} />}
+          />
         )}
       />
     </View>
@@ -83,23 +84,12 @@ export default function Devices() {
 
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: { flex: 1 },
-  row: {
+  error: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
+    justifyContent: "center",
+    gap: space.xs,
+    paddingVertical: space.sm,
   },
-  info: { flex: 1 },
-  label: { fontSize: 16, fontWeight: "600", color: t.text },
-  meta: { fontSize: 12, color: t.subtext, marginTop: 2 },
-  revoke: {
-    backgroundColor: "#c0392b",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  revokeText: { color: "white", fontWeight: "600" },
-  empty: { textAlign: "center", marginTop: 40, color: t.subtext },
-  error: { color: "#c0392b", textAlign: "center", paddingVertical: 6 },
+  errorText: { color: t.danger, fontSize: font.size.sm },
 });

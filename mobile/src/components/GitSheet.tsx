@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Platform, Pressable, StyleSheet, Text, TextInput, ToastAndroid, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, StyleSheet, Text, TextInput, ToastAndroid, View } from "react-native";
 import { makeClient } from "../lib/api";
 import type { PC } from "../lib/types";
-import { useTheme, type Theme } from "../lib/theme";
+import { font, radius, space, TOUCH, useTheme, type Theme } from "../lib/theme";
+import { Button, SheetFrame } from "./ui";
 
 function toast(msg: string) {
   if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.LONG);
@@ -55,53 +56,42 @@ export function GitSheet({ pc, project, visible, onClose, onCommitted }: {
 
   const c = makeClient(pc.baseUrl, pc.token);
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => {}}>
-          <View style={styles.header}>
-            <Text style={styles.title}>커밋 · 푸시 · PR</Text>
-            <Pressable onPress={onClose} hitSlop={12}>
-              <Text style={styles.close}>✕</Text>
-            </Pressable>
-          </View>
-          <TextInput style={styles.input} value={message} onChangeText={setMessage} placeholder="커밋 메시지" placeholderTextColor={t.placeholder} multiline editable={step === 0} />
-          {onDefault && step === 0 ? (
-            <TextInput style={styles.input} value={branch} onChangeText={setBranch} placeholder="새 브랜치 이름 (기본 브랜치에는 바로 커밋 안 함)" placeholderTextColor={t.placeholder} autoCapitalize="none" autoCorrect={false} />
-          ) : null}
-          {busy ? (
-            <View style={styles.busy}><ActivityIndicator /><Text style={styles.busyText}>{busy}</Text></View>
-          ) : (
-            <View style={styles.row}>
-              <Pressable style={[styles.btn, step !== 0 && styles.off]} disabled={step !== 0}
-                onPress={() => run("커밋", () => c.gitCommit(project, message, branch.trim() || undefined), 1).then((ok) => { if (ok) onCommitted(); })}>
-                <Text style={styles.btnText}>커밋</Text>
-              </Pressable>
-              <Pressable style={[styles.btn, step !== 1 && styles.off]} disabled={step !== 1} onPress={() => run("푸시", () => c.gitPush(project), 2)}>
-                <Text style={styles.btnText}>푸시</Text>
-              </Pressable>
-              <Pressable style={[styles.btn, step !== 2 && styles.off]} disabled={step !== 2}
-                onPress={() => run("PR", () => c.gitPr(project, message.split("\n")[0]), 3).then((ok) => { if (ok) onClose(); })}>
-                <Text style={styles.btnText}>PR</Text>
-              </Pressable>
-            </View>
-          )}
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <SheetFrame visible={visible} title="커밋 · 푸시 · PR" variant="dialog" onClose={onClose}>
+      <TextInput style={[styles.input, styles.message]} value={message} onChangeText={setMessage} placeholder="커밋 메시지" placeholderTextColor={t.placeholder} multiline editable={step === 0} />
+      {onDefault && step === 0 ? (
+        <TextInput style={[styles.input, styles.branch]} value={branch} onChangeText={setBranch} placeholder="새 브랜치 이름 (기본 브랜치에는 바로 커밋 안 함)" placeholderTextColor={t.placeholder} autoCapitalize="none" autoCorrect={false} />
+      ) : null}
+      {busy ? (
+        <View style={styles.busy}><ActivityIndicator color={t.accent} /><Text style={styles.busyText}>{busy}</Text></View>
+      ) : (
+        <View style={styles.row}>
+          <Button title="커밋" icon="check" style={styles.btn} disabled={step !== 0}
+            onPress={() => run("커밋", () => c.gitCommit(project, message, branch.trim() || undefined), 1).then((ok) => { if (ok) onCommitted(); })} />
+          <Button title="푸시" icon="upload" style={styles.btn} disabled={step !== 1} onPress={() => run("푸시", () => c.gitPush(project), 2)} />
+          <Button title="PR" icon="call-merge" style={styles.btn} disabled={step !== 2}
+            onPress={() => run("PR", () => c.gitPr(project, message.split("\n")[0]), 3).then((ok) => { if (ok) onClose(); })} />
+        </View>
+      )}
+    </SheetFrame>
   );
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", padding: 24 },
-  sheet: { backgroundColor: t.box, borderRadius: 12, padding: 16, gap: 10 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  title: { fontSize: 17, fontWeight: "700", color: t.text },
-  close: { fontSize: 20, color: t.subtext },
-  input: { borderWidth: StyleSheet.hairlineWidth, borderColor: t.border, borderRadius: 8, padding: 10, color: t.inputText, fontSize: 15 },
-  row: { flexDirection: "row", gap: 8 },
-  btn: { flex: 1, backgroundColor: t.accent, borderRadius: 8, paddingVertical: 12, alignItems: "center" },
-  off: { opacity: 0.35 },
-  btnText: { color: "#fff", fontWeight: "600" },
-  busy: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 12 },
-  busyText: { color: t.subtext },
+  input: {
+    minHeight: TOUCH,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: t.border,
+    color: t.text,
+    fontSize: font.size.md,
+  },
+  message: { maxHeight: 160, textAlignVertical: "top" },
+  // 안내 문구가 길어 16 이면 두 줄로 넘어가 잘린다
+  branch: { height: TOUCH, paddingVertical: 0, fontSize: font.size.sm },
+  row: { flexDirection: "row", gap: space.sm, paddingTop: space.xs, paddingBottom: space.lg },
+  btn: { flex: 1, paddingHorizontal: space.sm },
+  busy: { flexDirection: "row", alignItems: "center", gap: space.sm, height: TOUCH, marginBottom: space.lg },
+  busyText: { fontSize: font.size.sm, color: t.subtext },
 });

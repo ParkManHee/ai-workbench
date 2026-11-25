@@ -1,5 +1,7 @@
 export interface Badge { todo: number; doing: number; done: number; updated: string }
-export interface Project { name: string; path: string; last_activity: number; badge: Badge | null; agent_status?: "working" | "waiting" | null }
+export interface Project { name: string; path: string; last_activity: number; badge: Badge | null; agent_status?: "working" | "waiting" | null;
+  /** 앱에 보이는 세션(/sessions 와 같은 기준, 보관 제외). 옛 데몬은 보내지 않는다 */
+  sessions?: SessionInfo[] }
 export interface Check { id: string; ok: boolean; detail: string }
 export interface Preflight { claude_path: string | null; checks: Check[] }
 export type WsEvent =
