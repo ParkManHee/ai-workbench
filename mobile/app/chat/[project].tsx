@@ -29,10 +29,11 @@ import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMs
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
-import { Button, Chip, Icon, IconButton } from "../../src/components/ui";
+import { Button, Chip, Icon, IconButton, keepWords } from "../../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
 import { GitSheet } from "../../src/components/GitSheet";
+import { permView } from "../../src/lib/permSummary";
 
 /** 자주 쓰는 지시 — 탭하면 입력창에 채워진다(바로 전송 아님). */
 const PROMPT_PRESETS = [
@@ -75,18 +76,18 @@ export default function Chat() {
   // 어시스턴트 말풍선의 마크다운 렌더 스타일(테마 연동) — **, ``` 등이 원문으로 노출되지 않게 한다
   const mdStyles = useMemo(
     () => ({
-      body: { color: t.text, fontSize: 15, lineHeight: 22 },
-      paragraph: { marginTop: 0, marginBottom: 6 },
-      heading1: { color: t.text, fontSize: 19, fontWeight: "700" as const, marginVertical: space.xs },
-      heading2: { color: t.text, fontSize: 17, fontWeight: "700" as const, marginVertical: space.xs },
-      heading3: { color: t.text, fontSize: 15, fontWeight: "700" as const, marginVertical: 3 },
+      body: { color: t.text, fontSize: font.size.body, lineHeight: 22 },
+      paragraph: { marginTop: 0, marginBottom: space.xs },
+      heading1: { color: t.text, fontSize: font.size.lg, fontWeight: "700" as const, marginVertical: space.xs },
+      heading2: { color: t.text, fontSize: font.size.md, fontWeight: "700" as const, marginVertical: space.xs },
+      heading3: { color: t.text, fontSize: font.size.body, fontWeight: "700" as const, marginVertical: space.xxs },
       strong: { fontWeight: "700" as const },
       link: { color: t.accent },
       bullet_list_icon: { color: t.text },
       ordered_list_icon: { color: t.text },
-      code_inline: { backgroundColor: t.code, color: t.text, fontFamily: "monospace", borderRadius: 4 },
+      code_inline: { backgroundColor: t.code, color: t.text, fontFamily: "monospace", borderRadius: radius.xs },
       fence: { backgroundColor: t.code, borderColor: t.border, color: t.text, borderRadius: radius.sm, padding: space.sm, marginVertical: space.xs },
-      code_block: { backgroundColor: t.code, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: 11 },
+      code_block: { backgroundColor: t.code, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: font.size.code },
       blockquote: { backgroundColor: t.surfaceAlt, borderLeftColor: t.border, marginVertical: space.xs },
       hr: { backgroundColor: t.border },
       table: { borderColor: t.border },
@@ -141,6 +142,11 @@ export default function Chat() {
   const [todoOpen, setTodoOpen] = useState(false);
   const [perms, setPerms] = useState<{ id: string; tool_name: string; summary: string }[]>([]);
   const [denyReasons, setDenyReasons] = useState<Record<string, string>>({});
+  // 권한 카드 펼침 — `${id}:plan`(계획 본문) · `${id}:raw`(원본 JSON)
+  const [permOpen, setPermOpen] = useState<Record<string, boolean>>({});
+  const togglePerm = (key: string) => setPermOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  // 빈 대화 안내는 기록을 다 받은 뒤에만 — 받는 중에 띄우면 기록 위로 잠깐 깜박인다
+  const [historyLoaded, setHistoryLoaded] = useState(!session);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   // 변경 파일 목록은 기본 접힘 — 펼쳐 두면 파일이 많을 때 답변을 화면 위로 밀어낸다
   const [diffOpen, setDiffOpen] = useState(false);
@@ -378,25 +384,24 @@ export default function Chat() {
   useSpeechRecognitionEvent("error", () => setListening(false));
 
   function pickModel() {
-    setSheet({ title: "모델", message: `현재: ${model || "기본"}`, choices: [
-      { label: "기본(설정 따름)", onPress: () => setModel("") },
-      { label: "Opus", onPress: () => setModel("opus") },
-      { label: "Sonnet", onPress: () => setModel("sonnet") },
-      { label: "Haiku", onPress: () => setModel("haiku") },
-    ] });
+    setSheet({ title: "모델", choices: [
+      { label: "기본(설정 따름)", value: "" },
+      { label: "Opus", value: "opus" },
+      { label: "Sonnet", value: "sonnet" },
+      { label: "Haiku", value: "haiku" },
+    ].map((c) => ({ label: c.label, selected: model === c.value, onPress: () => setModel(c.value) })) });
   }
 
   function pickMode() {
-    setSheet({ title: "권한 모드", message: `현재: ${MODE_LABELS[mode]}`, choices:
-      Object.entries(MODE_LABELS).map(([m, label]) => ({ label, onPress: () => setMode(m) })),
+    setSheet({ title: "권한 모드", choices:
+      Object.entries(MODE_LABELS).map(([m, label]) => ({ label, description: MODE_HINTS[m], selected: mode === m, onPress: () => setMode(m) })),
     });
   }
 
   function pickEffort() {
-    setSheet({ title: "추론 강도", message: `현재: ${effort || "기본"}`, choices: [
-      { label: "기본(설정 따름)", onPress: () => setEffort("") },
-      ...["low", "medium", "high", "xhigh", "max"].map((e) => ({ label: e, onPress: () => setEffort(e) })),
-    ] });
+    setSheet({ title: "추론 강도", choices: ["", "low", "medium", "high", "xhigh", "max"].map((e) => ({
+      label: e || "기본(설정 따름)", selected: effort === e, onPress: () => setEffort(e),
+    })) });
   }
 
   async function toggleMic() {
@@ -527,6 +532,7 @@ export default function Chat() {
         nextLineRef.current = res.next;
         prevRef.current = res.prev;
         setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
+        setHistoryLoaded(true);
         if (res.active) {
           startPoll(pc);
           attachActiveRun(pc); // 진행 중 실행이 있으면 취소 가능하게 attach
@@ -539,6 +545,7 @@ export default function Chat() {
           router.replace("/");
         }
         // else: best-effort load; leave the chat empty and let the user send.
+        setHistoryLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -802,10 +809,9 @@ export default function Chat() {
       <Stack.Screen options={{ title: project ?? "실행" }} />
       {sid && path && controlsOpen ? (
         <Pressable style={styles.resumeBar} onLongPress={() => copyText(`cd ${path} && claude --resume ${sid}`)}>
-          <View style={styles.resumeTextCol}>
-            <Text style={styles.resumeLabel}>PC에서 이어받기:</Text>
-            <Text style={styles.resumeCmd}>{`cd ${path} && claude --resume ${sid}`}</Text>
-          </View>
+          {/* 한 줄 — 긴 경로가 서너 줄로 접혀 대화를 밀어내던 것. 전체는 복사로 */}
+          <Text style={styles.resumeLabel}>PC에서 이어받기</Text>
+          <Text style={styles.resumeCmd} numberOfLines={1} ellipsizeMode="middle">{`cd ${path} && claude --resume ${sid}`}</Text>
           <IconButton name="content-copy" label="이어받기 명령 복사" color={t.accent} onPress={() => copyText(`cd ${path} && claude --resume ${sid}`)} />
         </Pressable>
       ) : null}
@@ -818,7 +824,7 @@ export default function Chat() {
         return (
           <Pressable style={styles.todoBar} onPress={() => setTodoOpen((v) => !v)} accessibilityRole="button">
             <View style={styles.barRow}>
-              <Icon name="checklist" size={18} color={t.accent} />
+              <Icon name="checklist" size={TODO_ICON} color={t.accent} />
               <Text style={styles.todoTitle} numberOfLines={1}>
                 진행 {doneN}/{todos.length}{cur ? ` · ${cur.slice(2)}` : ""}
               </Text>
@@ -896,6 +902,15 @@ export default function Chat() {
         }}
       >
         {loadingOlder ? <ActivityIndicator style={{ marginVertical: space.sm }} color={t.accent} /> : null}
+        {historyLoaded && chat.messages.length === 0 && !chat.running ? (
+          <View style={styles.emptyChat}>
+            <Icon name="forum" size={40} color={t.subtext} />
+            <Text style={styles.emptyChatText}>
+              {keepWords("메시지를 보내면 PC에서 Claude가 이 프로젝트 작업을 시작합니다.")}
+            </Text>
+            <Text style={styles.emptyChatHint}>{keepWords("입력칸을 누르면 모델·권한·자주 쓰는 지시를 고를 수 있습니다.")}</Text>
+          </View>
+        ) : null}
         {chat.messages.map((m, i) => {
           const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
           const hasText = m.text.trim().length > 0;
@@ -971,7 +986,17 @@ export default function Chat() {
           </View>
         ) : null}
 
-        {diff ? (
+        {diff && diff.files === 0 ? (
+          // 변경이 없으면 상자 대신 한 줄 — 범위 전환은 그대로 둔다(이번 턴엔 없어도 작업트리 전체엔 있을 수 있다)
+          <View style={styles.diffEmpty}>
+            <Icon name="difference" size={18} color={t.subtext} />
+            <Text style={styles.diffEmptyText}>git 변경 없음 · {diff.run ? "이번 턴" : "전체"}</Text>
+            {lastRunRef.current && !chat.running ? (["turn", "all"] as const).map((sc) => (
+              <Chip key={sc} label={sc === "turn" ? "이번 턴" : "전체"} selected={(diff.run ? "turn" : "all") === sc}
+                onPress={() => { diffScopeRef.current = sc; if (pc) fetchDiff(pc); }} />
+            )) : null}
+          </View>
+        ) : diff ? (
           <View style={styles.diffBox}>
             <Pressable style={styles.diffHeader} onPress={() => setDiffOpen((v) => !v)} accessibilityRole="button">
               <Icon name="difference" size={18} color={t.subtext} />
@@ -1025,7 +1050,54 @@ export default function Chat() {
               <Icon name="lock" size={18} color={t.warning} />
               <Text style={styles.permTitle}>권한 요청: {pm.tool_name}</Text>
             </View>
-            <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
+            {(() => {
+              const v = permView(pm.tool_name, pm.summary);
+              const rawOpen = !!permOpen[`${pm.id}:raw`];
+              const planOpen = !!permOpen[`${pm.id}:plan`];
+              return (
+                <>
+                  {v.kind === "file" ? (
+                    <>
+                      <Text style={styles.permPath} numberOfLines={1} ellipsizeMode="middle">{v.path}</Text>
+                      {v.preview ? <Text style={styles.permBody} numberOfLines={3}>{v.preview}</Text> : null}
+                    </>
+                  ) : v.kind === "command" ? (
+                    <>
+                      <Text style={styles.permCode} numberOfLines={3}>$ {v.command}</Text>
+                      {v.description ? <Text style={styles.permNote} numberOfLines={1}>{v.description}</Text> : null}
+                    </>
+                  ) : v.kind === "plan" ? (
+                    planOpen ? (
+                      <ScrollView style={styles.permScroll} nestedScrollEnabled>
+                        <Markdown style={mdStyles}>{v.plan}</Markdown>
+                      </ScrollView>
+                    ) : (
+                      <Text style={styles.permNote} numberOfLines={3}>{v.plan}</Text>
+                    )
+                  ) : v.kind === "question" ? (
+                    v.questions.map((q, qi) => (
+                      <View key={qi} style={styles.permQuestion}>
+                        <Text style={styles.permQuestionText}>{q.question}</Text>
+                        {q.options.map((o, oi) => <Text key={oi} style={styles.permNote}>· {o}</Text>)}
+                      </View>
+                    ))
+                  ) : !rawOpen ? (
+                    <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
+                  ) : null}
+                  {rawOpen ? (
+                    <ScrollView style={styles.permScroll} nestedScrollEnabled>
+                      <Text style={styles.permRaw} selectable>{pm.summary}</Text>
+                    </ScrollView>
+                  ) : null}
+                  <View style={styles.permToggles}>
+                    {v.kind === "plan" ? (
+                      <Button title={planOpen ? "계획 접기" : "계획 펼치기"} icon={planOpen ? "expand-less" : "expand-more"} variant="ghost" size="sm" onPress={() => togglePerm(`${pm.id}:plan`)} />
+                    ) : null}
+                    <Button title={rawOpen ? "원본 접기" : "원본 JSON 보기"} icon="data-object" variant="ghost" size="sm" onPress={() => togglePerm(`${pm.id}:raw`)} />
+                  </View>
+                </>
+              );
+            })()}
             <View style={styles.permButtons}>
               <Button title="이번만" style={styles.permButton} onPress={() => answerPermission(pm.id, true)} />
               <Button title="세션 동안" variant="secondary" style={styles.permButton} onPress={() => answerPermission(pm.id, true, true)} />
@@ -1107,10 +1179,10 @@ export default function Chat() {
           {controlsOpen ? (
           <>
           <View style={styles.planRow}>
-            <Text style={styles.planLabel}>계획</Text>
+            <Text style={styles.planLabel}>계획 모드</Text>
             <Switch
               style={styles.planSwitch}
-              accessibilityLabel="계획"
+              accessibilityLabel="계획 모드"
               value={plan}
               onValueChange={setPlan}
               disabled={running}
@@ -1183,6 +1255,15 @@ export default function Chat() {
 
 // 값은 서버 PERMISSION_MODES(claude --permission-mode)와 같아야 한다
 const MODE_LABELS: Record<string, string> = { default: "감독", acceptEdits: "편집 자동", auto: "자동", bypassPermissions: "전체" };
+// 전체만 폰을 거치지 않는다(routes.rs approval_mcp_cfg_for) — 나머지는 claude 가 묻는 것을 폰에서 답한다
+const MODE_HINTS: Record<string, string> = {
+  default: "파일 수정·명령마다 폰에서 승인",
+  acceptEdits: "파일 수정은 바로, 명령은 폰에서 승인",
+  auto: "Claude가 판단해 위험한 것만 폰에서 승인",
+  bypassPermissions: "묻지 않고 모두 실행",
+};
+/** 할 일 바 아이콘 — 펼친 항목을 제목 글자 줄에 맞춰 들여 쓴다 */
+const TODO_ICON = 18;
 
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
@@ -1194,22 +1275,19 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: space.sm,
   },
   resumeBar: {
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
+    paddingLeft: space.lg,
+    paddingRight: space.xs,
     backgroundColor: t.surface,
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-  },
-  resumeTextCol: {
-    flex: 1,
-    gap: 2,
   },
   resumeLabel: {
     fontSize: font.size.xs,
     color: t.subtext,
   },
   resumeCmd: {
+    flex: 1,
     fontSize: font.size.xs,
     fontFamily: "monospace",
     color: t.text,
@@ -1233,7 +1311,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     fontSize: font.size.xs,
     color: t.subtext,
     marginTop: space.xs,
-    marginLeft: 26,
+    marginLeft: TODO_ICON + space.sm,
   },
   limitBar: {
     flexDirection: "row",
@@ -1256,6 +1334,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flex: 1,
   },
   listContent: {
+    flexGrow: 1,
     padding: space.lg,
     gap: space.sm,
   },
@@ -1266,7 +1345,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     borderRadius: radius.lg,
     borderBottomRightRadius: space.xs,
     paddingHorizontal: space.md,
-    paddingVertical: 10,
+    paddingVertical: space.sm,
     maxWidth: "85%",
   },
   assistantBubble: {
@@ -1276,11 +1355,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     borderRadius: radius.lg,
     borderBottomLeftRadius: space.xs,
     paddingHorizontal: space.md,
-    paddingVertical: 10,
+    paddingVertical: space.sm,
     maxWidth: "85%",
   },
   userText: {
-    fontSize: 15,
+    fontSize: font.size.body,
     lineHeight: 22,
     color: t.text,
   },
@@ -1306,7 +1385,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     color: t.subtext,
   },
   toolDetail: {
-    fontSize: 11,
+    fontSize: font.size.code,
     color: t.subtext,
     fontFamily: "monospace",
     backgroundColor: t.code,
@@ -1328,7 +1407,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   verdictRow: {
     alignItems: "center",
     paddingVertical: space.sm,
-    gap: 2,
+    gap: space.xxs,
   },
   verdictText: {
     fontSize: font.size.sm,
@@ -1363,6 +1442,36 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.xs,
     marginTop: space.xs,
+  },
+  diffEmpty: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: space.sm,
+    minHeight: TOUCH,
+    marginTop: space.xs,
+  },
+  diffEmptyText: {
+    flexGrow: 1,
+    fontSize: font.size.sm,
+    color: t.subtext,
+  },
+  emptyChat: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.sm,
+    paddingHorizontal: space.xl,
+  },
+  emptyChatText: {
+    fontSize: font.size.md,
+    color: t.text,
+    textAlign: "center",
+  },
+  emptyChatHint: {
+    fontSize: font.size.sm,
+    color: t.subtext,
+    textAlign: "center",
   },
   diffHeader: {
     flexDirection: "row",
@@ -1401,7 +1510,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     color: t.text,
   },
   diffText: {
-    fontSize: 10,
+    fontSize: font.size.code,
     fontFamily: "monospace",
     color: t.text,
     backgroundColor: t.code,
@@ -1441,6 +1550,47 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     fontFamily: "monospace",
     color: t.subtext,
   },
+  permPath: {
+    fontSize: font.size.xs,
+    fontFamily: "monospace",
+    fontWeight: font.weight.bold,
+    color: t.text,
+  },
+  permCode: {
+    fontSize: font.size.sm,
+    fontFamily: "monospace",
+    color: t.text,
+  },
+  permNote: {
+    fontSize: font.size.sm,
+    color: t.subtext,
+  },
+  permQuestion: {
+    gap: space.xxs,
+  },
+  permQuestionText: {
+    fontSize: font.size.sm,
+    fontWeight: font.weight.bold,
+    color: t.text,
+  },
+  // 키보드 위에 붙은 카드라 펼친 본문은 높이를 묶고 안에서 스크롤
+  permScroll: {
+    maxHeight: 240,
+    backgroundColor: t.bg,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+  },
+  permRaw: {
+    fontSize: font.size.code,
+    fontFamily: "monospace",
+    color: t.text,
+    paddingVertical: space.sm,
+  },
+  permToggles: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.sm,
+  },
   permButtons: {
     flexDirection: "row",
     gap: space.sm,
@@ -1453,6 +1603,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     minHeight: TOUCH,
     paddingHorizontal: space.md,
     borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.inputBorder,
     backgroundColor: t.bg,
     fontSize: font.size.sm,
     color: t.text,
@@ -1497,7 +1649,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     right: -6,
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: radius.pill,
     backgroundColor: media.scrim,
     alignItems: "center",
     justifyContent: "center",
@@ -1552,7 +1704,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     borderRadius: TOUCH / 2,
     backgroundColor: t.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
+    borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,
   },

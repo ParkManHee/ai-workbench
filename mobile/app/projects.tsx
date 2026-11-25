@@ -48,7 +48,10 @@ function buildItems(projects: Project[], showIdle: boolean): Item[] {
       items.push({ kind: "more", project, total: project.sessions.length });
     }
   }
-  if (idle.length > 0) {
+  // 세션 있는 프로젝트가 하나도 없으면 접어 둘 이유가 없다 — 접기 줄 없이 전부 보인다
+  if (idle.length > 0 && items.length === 0) {
+    for (const project of idle) items.push({ kind: "project", project });
+  } else if (idle.length > 0) {
     items.push({ kind: "fold", count: idle.length });
     if (showIdle) for (const project of idle) items.push({ kind: "project", project });
   }
@@ -224,6 +227,7 @@ export default function Projects() {
       <ListRow
         title={project.name}
         subtitle={project.path}
+        subtitleEllipsize="middle"
         onPress={() => handlePress(project)}
         right={
           <View style={styles.right}>
@@ -326,7 +330,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   },
   childBody: {
     flex: 1,
-    gap: 2,
+    gap: space.xxs,
   },
   childTitle: {
     fontSize: font.size.sm,

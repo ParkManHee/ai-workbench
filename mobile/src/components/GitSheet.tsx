@@ -83,7 +83,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingVertical: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: t.border,
+    borderColor: t.inputBorder,
     color: t.text,
     fontSize: font.size.md,
   },

@@ -9,6 +9,12 @@ import { Button, EmptyState, Icon, ListRow } from "../src/components/ui";
 
 interface DeviceDto { id: string; label: string; paired_at: number }
 
+/** 데몬이 붙이는 라벨은 모두 "mobile" 이라 이름만으론 못 가린다 — id 앞 4자를 붙이고 부제에 페어링 시각(분까지)을 둔다 */
+function pairedAt(sec: number): string {
+  const d = new Date(sec * 1000);
+  return `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}. ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 /** 페어링 기기 관리 — 분실 폰 등의 토큰을 회수(즉시 401)한다. */
 export default function Devices() {
   const t = useTheme();
@@ -72,8 +78,8 @@ export default function Devices() {
         ListEmptyComponent={<EmptyState icon="devices" title="페어링된 기기가 없습니다." />}
         renderItem={({ item }) => (
           <ListRow
-            title={item.label}
-            subtitle={`${item.id} · ${new Date(item.paired_at * 1000).toLocaleDateString("ko-KR")} 페어링`}
+            title={`${item.label} #${item.id.slice(0, 4)}${item.id === pc?.deviceId ? " · 이 기기" : ""}`}
+            subtitle={`${pairedAt(item.paired_at)} 페어링 · ${item.id}`}
             right={<Button title="회수" variant="dangerOutline" size="sm" onPress={() => confirmRevoke(item)} />}
           />
         )}

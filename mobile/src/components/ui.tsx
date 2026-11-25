@@ -145,9 +145,11 @@ export function Chip({ label, onPress, selected, disabled, icon, trailingIcon, c
 }
 
 /** 목록 한 줄 — 최소 높이 56(한 줄)·72(두 줄 이상). 오른쪽은 배지·버튼·화살표 */
-export function ListRow({ title, subtitle, right, children, onPress, onLongPress }: {
+export function ListRow({ title, subtitle, subtitleEllipsize, right, children, onPress, onLongPress }: {
   title: string;
   subtitle?: string;
+  /** 경로처럼 끝이 중요한 부제는 middle */
+  subtitleEllipsize?: "middle";
   right?: ReactNode;
   /** 제목·부제 아래 추가 줄 */
   children?: ReactNode;
@@ -165,7 +167,7 @@ export function ListRow({ title, subtitle, right, children, onPress, onLongPress
     >
       <View style={styles.rowBody}>
         <Text style={[styles.rowTitle, { color: t.text }]} numberOfLines={1}>{title}</Text>
-        {subtitle ? <Text style={[styles.rowSubtitle, { color: t.subtext }]} numberOfLines={1}>{subtitle}</Text> : null}
+        {subtitle ? <Text style={[styles.rowSubtitle, { color: t.subtext }]} numberOfLines={1} ellipsizeMode={subtitleEllipsize}>{subtitle}</Text> : null}
         {children}
       </View>
       {right}
@@ -279,26 +281,26 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  rowBody: { flex: 1, gap: 2 },
+  rowBody: { flex: 1, gap: space.xxs },
   rowTitle: { fontSize: font.size.md, fontWeight: font.weight.bold },
   rowSubtitle: { fontSize: font.size.xs },
   badge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: space.xs,
     paddingHorizontal: space.sm,
     height: 24,
     borderRadius: radius.pill,
     alignSelf: "flex-start",
   },
-  dot: { width: 8, height: 8, borderRadius: 4 },
+  dot: { width: 8, height: 8, borderRadius: radius.pill },
   badgeText: { fontSize: font.size.xs, fontWeight: font.weight.medium },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.xl, gap: space.md },
   emptyText: { fontSize: font.size.sm, textAlign: "center" },
   backdrop: { flex: 1 },
   backdropBottom: { justifyContent: "flex-end" },
   sheet: { paddingHorizontal: space.lg, paddingTop: space.sm, gap: space.sm },
-  grabber: { alignSelf: "center", width: 32, height: 4, borderRadius: 2, marginBottom: space.xs },
+  grabber: { alignSelf: "center", width: 32, height: 4, borderRadius: radius.pill, marginBottom: space.xs },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.sm },
   sheetTitle: { flex: 1, fontSize: font.size.lg, fontWeight: font.weight.bold },
 });

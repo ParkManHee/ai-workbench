@@ -383,7 +383,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: t.border,
+    borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,
   },
@@ -404,7 +404,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.xs,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
   liveText: {
     flex: 1,
@@ -414,11 +414,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   answerPreview: {
     fontSize: font.size.sm,
     color: t.subtext,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
   updated: {
     fontSize: font.size.xs,
     color: t.subtext,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
 });
