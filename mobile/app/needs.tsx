@@ -22,6 +22,10 @@ function permLine(tool: string, summary: string): string {
   }
 }
 
+// 경로는 끝(파일 이름)이 중요하다 — 채팅 권한 카드처럼 한 줄 가운데 생략
+const PATH_LINE = { numberOfLines: 1, ellipsizeMode: "middle" } as const;
+const BODY_LINES = { numberOfLines: 3 } as const;
+
 /** 모든 PC·프로젝트의 권한 요청과 답 대기 대화 — 권한은 여기서 답하고, 대화는 눌러서 들어간다 */
 export default function Needs() {
   const t = useTheme();
@@ -82,7 +86,7 @@ export default function Needs() {
             <Icon name="lock" size={18} color={t.warning} />
             <Text style={styles.permTitle} numberOfLines={1}>{p.tool_name} · {p.project}{multiPc ? ` · ${pc.label}` : ""}</Text>
           </View>
-          <Text style={styles.permBody} numberOfLines={3}>{permLine(p.tool_name, p.summary)}</Text>
+          <Text style={styles.permBody} {...(permView(p.tool_name, p.summary).kind === "file" ? PATH_LINE : BODY_LINES)}>{permLine(p.tool_name, p.summary)}</Text>
           <View style={styles.permButtons}>
             <Button title="허용" style={styles.permButton} onPress={() => answer(pc, p.id, true)} />
             <Button title="거부" variant="danger" style={styles.permButton} onPress={() => answer(pc, p.id, false)} />

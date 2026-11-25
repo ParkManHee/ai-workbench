@@ -94,7 +94,8 @@ export function ScheduleSection({ pc, project }: { pc: PC; project: string }) {
         {view === "list" ? (
           <>
             <Text style={styles.hint}>PC가 잠자거나 꺼져 있어 놓친 회차는 건너뛰고 다음 회차에 실행합니다. 끝나면 알림이 옵니다.</Text>
-            <ScrollView style={{ maxHeight: 360 }}>
+            {/* ListRow 가 자기 좌우 패딩을 갖는다 — 시트 패딩만큼 빼서 행 제목이 시트 제목과 같은 선에 선다 */}
+            <ScrollView style={{ maxHeight: 360, marginHorizontal: -space.lg }}>
               {list.length === 0 ? <Text style={styles.empty}>예약이 없습니다.</Text> : null}
               {list.map((s) => (
                 <ListRow

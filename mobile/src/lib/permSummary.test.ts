@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { permView } from "./permSummary";
 
-// 데몬처럼 300자에서 자르고 「…」 — 실제로 오는 모양
+// 데몬 상한을 넘은 입력처럼 자르고 「…」 — 상한(routes.rs PERM_INPUT_MAX_CHARS)을 작게 흉내 낸다
 const cut = (input: unknown) => {
   const raw = JSON.stringify(input);
   return raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
@@ -16,6 +16,18 @@ describe("permView", () => {
   it("잘린 계획 본문 — 끝의 반쪽 이스케이프는 버린다", () => {
     const s = `${cut({ plan: `# 계획\n${"y".repeat(400)}` }).slice(0, 20)}\\`;
     expect(permView("ExitPlanMode", s)).toEqual({ kind: "plan", plan: "# 계획\nyyyyy" });
+  });
+
+  it("이스케이프 바로 뒤에서 잘린 계획(`\\…`)도 줄바꿈을 풀고 「…」 만 남긴다", () => {
+    const raw = JSON.stringify({ plan: `# 계획\n1. 첫 단계\n2. 둘째 "단계"\n3. 끝` });
+    const at = raw.lastIndexOf("\\n") + 1; // 마지막 \n 의 역슬래시까지만 남긴다
+    expect(permView("ExitPlanMode", `${raw.slice(0, at)}…`)).toEqual({ kind: "plan", plan: `# 계획\n1. 첫 단계\n2. 둘째 "단계"…` });
+  });
+
+  it("잘리지 않은 긴 계획은 전부 — 줄바꿈·인용·유니코드 이스케이프를 푼다", () => {
+    const plan = `# 계획\n${"- 단계 \"x\" \u00e9\n".repeat(500)}끝`;
+    expect(permView("ExitPlanMode", JSON.stringify({ plan }))).toEqual({ kind: "plan", plan });
+    expect(permView("ExitPlanMode", '{"plan":"a\\u00e9\\ud83d\\ude00b"}')).toEqual({ kind: "plan", plan: "aé😀b" });
   });
 
   it("AskUserQuestion 은 질문마다 자기 선택지만", () => {

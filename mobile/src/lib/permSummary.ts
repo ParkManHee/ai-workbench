@@ -8,9 +8,18 @@ export type PermView =
   | { kind: "question"; questions: { question: string; options: string[] }[] }
   | { kind: "raw" };
 
+const ESC: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" };
+
+/** JSON 문자열 이스케이프를 푼다 — 잘린 끝의 반쪽(\ · \u12)이나 `\…` 가 있어도 나머지는 푼다 */
+function unescapeJson(s: string): string {
+  return s.replace(/\\(u[0-9a-fA-F]{4}|u[0-9a-fA-F]{0,3}|[\s\S]?)/g, (_, e: string) =>
+    e.length === 5 ? String.fromCharCode(parseInt(e.slice(1), 16)) : e[0] === "u" ? "" : ESC[e] ?? e,
+  );
+}
+
 /**
- * 데몬은 도구 입력 JSON 을 300자에서 잘라 「…」 를 붙여 보낸다(routes.rs permission_request_handler) —
- * 긴 Write·계획은 JSON.parse 가 실패하므로, 키로 문자열 값을 직접 읽어 잘린 앞부분이라도 보인다.
+ * 데몬은 도구 입력 JSON 이 상한(routes.rs PERM_INPUT_MAX_CHARS)을 넘으면 잘라 「…」 를 붙여 보낸다 —
+ * 잘린 입력은 JSON.parse 가 실패하므로, 키로 문자열 값을 직접 읽어 잘린 앞부분이라도 보인다.
  */
 export function stringValues(raw: string, key: string): string[] {
   const out: string[] = [];
@@ -23,13 +32,7 @@ export function stringValues(raw: string, key: string): string[] {
       body += raw[i] === "\\" ? raw.slice(i, i + 2) : raw[i];
       i += raw[i] === "\\" ? 2 : 1;
     }
-    // 잘린 끝의 반쪽 이스케이프(\ · \u12)는 버린다
-    body = body.replace(/\\(u[0-9a-fA-F]{0,3})?$/, "");
-    try {
-      out.push(JSON.parse(`"${body}"`));
-    } catch {
-      out.push(body);
-    }
+    out.push(unescapeJson(body));
     re.lastIndex = i;
   }
   return out;

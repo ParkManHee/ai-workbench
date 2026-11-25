@@ -224,6 +224,8 @@ export function SheetFrame({ visible, title, onClose, variant = "bottom", childr
       <Pressable
         style={[styles.backdrop, { backgroundColor: t.scrim }, bottom ? styles.backdropBottom : { paddingTop: insets.top + 72, paddingHorizontal: space.lg }]}
         onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="닫기"
       >
         <Pressable
           style={[

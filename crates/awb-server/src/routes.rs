@@ -330,6 +330,19 @@ pub fn write_approval_mcp_cfg(st: &AppState, project: &str) -> Option<String> {
 #[derive(serde::Deserialize)]
 pub struct PermRequestBody { pub project: String, pub tool_name: String, pub input: serde_json::Value }
 
+/// 앱에 주는 권한 입력 상한 — ExitPlanMode 는 계획 전문을 보고 승인해야 하므로 넉넉히 둔다(긴 계획도 수천 자).
+/// 무한정이 아닌 이유: 대기 건마다 폴링(/permission/pending)·답 필요 목록 응답에 그대로 실린다.
+const PERM_INPUT_MAX_CHARS: usize = 20_000;
+/// 푸시 본문 상한 — 알림 한 칸에 보일 만큼만, 페이로드 한도(4KB) 안에 둔다.
+const PERM_PUSH_MAX_CHARS: usize = 300;
+
+/// (앱에 줄 입력, 푸시 본문) — 넘치면 문자 경계에서 자르고 「…」 를 붙인다.
+fn perm_summaries(input: &serde_json::Value) -> (String, String) {
+    let raw = input.to_string();
+    let cut = |max| match crate::streamevt::truncate_chars(&raw, max) { (t, true) => format!("{t}…"), (t, false) => t };
+    (cut(PERM_INPUT_MAX_CHARS), cut(PERM_PUSH_MAX_CHARS))
+}
+
 /// MCP 릴레이가 호출(내부 시크릿 인증). 폰 응답까지 대기(최대 300초) 후 allow/deny 반환.
 pub async fn permission_request_handler(
     State(st): State<AppState>,
@@ -345,21 +358,17 @@ pub async fn permission_request_handler(
         if st.perms.is_session_allowed(sid, &b.tool_name) { return Ok(Json(serde_json::json!({ "allow": true }))); }
     }
     let id = crate::pairing::random_token()[..16].to_string();
-    let summary = {
-        let raw = b.input.to_string();
-        let t: String = raw.chars().take(300).collect();
-        if raw.chars().count() > 300 { format!("{t}…") } else { t }
-    };
+    let (summary, push_body) = perm_summaries(&b.input);
     let (tx, rx) = tokio::sync::oneshot::channel();
     st.perms.insert(&id, crate::perm::PendingPerm {
-        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary.clone(), session_id, tx: Some(tx),
+        project: b.project.clone(), tool_name: b.tool_name.clone(), input_summary: summary, session_id, tx: Some(tx),
     });
     // 앱 밖에서도 승인하러 올 수 있게 푸시(딥링크 포함)
     let tokens = st.push.list();
     let data = serde_json::json!({
         "hostname": resolve_hostname(), "project": b.project, "path": "", "session": st.sessions.get(&b.project),
     });
-    crate::push::send(&tokens, &format!("🔐 승인 요청 — {}", b.project), &format!("{}: {}", b.tool_name, summary), &data);
+    crate::push::send(&tokens, &format!("🔐 승인 요청 — {}", b.project), &format!("{}: {}", b.tool_name, push_body), &data);
     let d = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await.ok().and_then(|r| r.ok())
         .unwrap_or(crate::perm::Decision { allow: false, message: None });
     st.perms.remove(&id); // 타임아웃 잔류 정리(정상 응답이면 이미 제거됨)
@@ -785,6 +794,18 @@ mod tests {
         }
         assert!(super::speaks_http(serve(b"HTTP/1.1 200 OK\r\n\r\n")));
         assert!(!super::speaks_http(serve(b"J\x00\x00\x00\x0a8.0.33\x00")));
+    }
+
+    #[test]
+    fn perm_summary_keeps_full_plan_for_app_and_short_push() {
+        let plan = format!("# 계획\n{}", "단계 설명 ".repeat(1000)); // 6천 자 넘는 계획
+        let input = serde_json::json!({ "plan": plan });
+        let (app, push) = perm_summaries(&input);
+        let back: serde_json::Value = serde_json::from_str(&app).expect("앱 입력은 잘리지 않은 JSON");
+        assert_eq!(back["plan"], plan);
+        assert!(push.ends_with('…') && push.chars().count() == PERM_PUSH_MAX_CHARS + 1);
+        let (huge, _) = perm_summaries(&serde_json::json!({ "plan": "가".repeat(PERM_INPUT_MAX_CHARS) }));
+        assert!(huge.ends_with('…') && huge.chars().count() == PERM_INPUT_MAX_CHARS + 1);
     }
 
     #[tokio::test]

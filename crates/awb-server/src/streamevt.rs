@@ -16,7 +16,7 @@ pub enum Event {
 
 /// 문자(char) 경계를 지켜 최대 `max_chars`개 문자로 잘라 UTF-8 패닉을 방지한다.
 /// (바이트 인덱스로 자르면 한글/이모지 등 멀티바이트 문자 중간에서 패닉 가능)
-fn truncate_chars(s: &str, max_chars: usize) -> (String, bool) {
+pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> (String, bool) {
     let mut it = s.chars();
     let truncated: String = it.by_ref().take(max_chars).collect();
     let truncated_flag = it.next().is_some();
