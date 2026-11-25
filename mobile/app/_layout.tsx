@@ -67,6 +67,8 @@ async function openFromNotification(data: Record<string, unknown> | undefined): 
       pc: pc.id,
       path: typeof data?.path === "string" ? data.path : "",
       ...(typeof data?.session === "string" && data.session ? { session: data.session } : {}),
+      // 격리 실행이면 path 는 그 트리이고 브랜치가 함께 온다
+      ...(typeof data?.branch === "string" && data.branch ? { branch: data.branch } : {}),
     },
   });
 }

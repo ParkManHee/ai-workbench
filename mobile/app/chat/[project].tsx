@@ -22,7 +22,7 @@ import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-cont
 import { router, useLocalSearchParams, Stack } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
+import { HttpError, isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { changedFilesLabel, initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import { rewriteBangCommand } from "../../src/lib/bang";
 import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
@@ -97,13 +97,22 @@ export default function Chat() {
     }),
     [t]
   );
-  const { project, pc: pcId, path, session, fresh } = useLocalSearchParams<{
+  const { project, pc: pcId, path, session, fresh, branch } = useLocalSearchParams<{
     project: string;
     pc: string;
     path: string;
     session?: string;
     fresh?: string;
+    /** 격리 세션이면 그 브랜치 — path 는 그때 격리 트리 경로다 */
+    branch?: string;
   }>();
+  // 격리 트리(폰 작업별 워크트리) — 새 대화 첫 메시지에서 「격리」 를 켜고 보내면 데몬이 만들어 돌려준다
+  const [wt, setWt] = useState<{ path: string; branch: string } | null>(branch && path ? { path, branch } : null);
+  // 전송 직후 붙는 스트림의 done 처리(이전 렌더의 클로저)도 새 트리를 보게 — 변경 보기는 ref 로 읽는다
+  const wtRef = useRef(wt);
+  const [isolate, setIsolate] = useState(false);
+  // 변경 보기·이어받기 명령은 실제로 도는 트리 기준
+  const workPath = wt?.path ?? path;
   // "+ 새 대화" 로 열었으면 첫 전송만 새 세션 요청 — 없으면 서버가 저장된 마지막 세션을 잇는다
   const newSessionRef = useRef(fresh === "1");
   // 실제로 이어 쓰는 세션 — 터미널에 열린 세션을 고르면 서버가 갈라(fork) 새 ID 로 쓰고 done 으로 알려준다
@@ -124,6 +133,8 @@ export default function Chat() {
   // run starts, per reduceEvent's tests); the idle screen before any send
   // should not show a "cancel"/disabled input, so start with running:false.
   const [chat, setChat] = useState<ChatState>(() => ({ ...initialChatState(), running: false }));
+  // 격리는 새 대화의 첫 메시지에서만 — 이미 원래 트리에서 진행한 대화를 중간에 옮기지 않는다
+  const canIsolate = fresh === "1" && !sid && !wt && chat.messages.length === 0;
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState(false);
   // 권한 모드(claude --permission-mode) — 전체 외에는 claude 가 묻는 것을 폰으로 받는다
@@ -634,6 +645,7 @@ export default function Chat() {
   }
 
   async function fetchDiff(p: PC) {
+    const path = wtRef.current?.path ?? workPath;
     if (!path) return;
     try {
       const c = makeClient(p.baseUrl, p.token);
@@ -658,6 +670,7 @@ export default function Chat() {
       });
       return;
     }
+    const path = wtRef.current?.path ?? workPath;
     if (!pc || !path) return;
     try {
       const res = await makeClient(pc.baseUrl, pc.token).diffFile(path, file, diff?.run);
@@ -745,8 +758,12 @@ export default function Chat() {
     try {
       setShowPlanApprove(false);
       planAtSendRef.current = planFlag;
-      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined, newSessionRef.current);
+      const res = await client.chat(project, fullPrompt, planFlag, sidRef.current, mode, model || undefined, effort || undefined, newSessionRef.current, canIsolate && isolate);
       newSessionRef.current = false;
+      if (res.worktree) {
+        wtRef.current = { path: res.worktree.path, branch: res.worktree.branch };
+        setWt(wtRef.current);
+      }
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({
@@ -775,7 +792,8 @@ export default function Chat() {
         return;
       }
       restoreInput();
-      setSendError("전송 실패. 다시 시도해주세요.");
+      // 격리 트리를 못 만들면(같은 이름이 이미 있음 등) 데몬이 준 사유를 그대로 보인다
+      setSendError(e instanceof HttpError && e.status === 409 ? `전송 실패: ${e.message}` : "전송 실패. 다시 시도해주세요.");
     }
     } finally {
       sendingRef.current = false;
@@ -807,12 +825,18 @@ export default function Chat() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: project ?? "실행" }} />
-      {sid && path && controlsOpen ? (
-        <Pressable style={styles.resumeBar} onLongPress={() => copyText(`cd ${path} && claude --resume ${sid}`)}>
+      {wt ? (
+        <View style={styles.wtBar} accessible accessibilityLabel={`격리 트리에서 실행 중, 브랜치 ${wt.branch}`}>
+          <Icon name="call-split" size={16} color={t.accent} />
+          <Text style={styles.wtText} numberOfLines={1} ellipsizeMode="middle">격리 · {wt.branch}</Text>
+        </View>
+      ) : null}
+      {sid && workPath && controlsOpen ? (
+        <Pressable style={styles.resumeBar} onLongPress={() => copyText(`cd ${workPath} && claude --resume ${sid}`)}>
           {/* 한 줄 — 긴 경로가 서너 줄로 접혀 대화를 밀어내던 것. 전체는 복사로 */}
           <Text style={styles.resumeLabel}>PC에서 이어받기</Text>
-          <Text style={styles.resumeCmd} numberOfLines={1} ellipsizeMode="middle">{`cd ${path} && claude --resume ${sid}`}</Text>
-          <IconButton name="content-copy" label="이어받기 명령 복사" color={t.accent} onPress={() => copyText(`cd ${path} && claude --resume ${sid}`)} />
+          <Text style={styles.resumeCmd} numberOfLines={1} ellipsizeMode="middle">{`cd ${workPath} && claude --resume ${sid}`}</Text>
+          <IconButton name="content-copy" label="이어받기 명령 복사" color={t.accent} onPress={() => copyText(`cd ${workPath} && claude --resume ${sid}`)} />
         </Pressable>
       ) : null}
       {(() => {
@@ -1113,7 +1137,8 @@ export default function Chat() {
           </View>
         ))}
         {/* 실행 종료 + 변경 있음 → 커밋·푸시·PR 시트 */}
-        {!chat.running && diff && diff.files > 0 ? (
+        {/* 격리 실행은 세션 ID 로 트리를 찾는다 — 아직 모르면(백그라운드 중 끝남) 원래 트리에 커밋되지 않게 숨긴다 */}
+        {!chat.running && diff && diff.files > 0 && (!wt || sid) ? (
           <View style={styles.chipBar}>
             <Chip icon="commit" label="커밋·푸시·PR" selected onPress={() => setGitOpen(true)} />
           </View>
@@ -1193,6 +1218,9 @@ export default function Chat() {
           {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
           <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
           <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
+          {canIsolate ? (
+            <Chip icon="call-split" label={isolate ? "격리 켬" : "격리"} selected={isolate} onPress={() => setIsolate((v) => !v)} />
+          ) : null}
           <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
             <Text style={styles.chipText}>
               권한 <Text style={{ color: t.accent, fontWeight: font.weight.bold }}>{MODE_LABELS[mode]}</Text>
@@ -1247,7 +1275,7 @@ export default function Chat() {
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
-      <GitSheet pc={pc} project={project} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
+      <GitSheet pc={pc} project={project} session={sid} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
       <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );
@@ -1274,6 +1302,16 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
   },
+  // 격리 실행 표시 — 어느 브랜치에서 도는지 늘 보이게(컨트롤을 접어도)
+  wtBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.xs,
+    backgroundColor: t.accentSoft,
+  },
+  wtText: { flex: 1, fontSize: font.size.sm, color: t.accent, fontWeight: font.weight.bold },
   resumeBar: {
     paddingLeft: space.lg,
     paddingRight: space.xs,

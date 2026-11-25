@@ -1,4 +1,4 @@
-import type { NeedsYou, Project, Preflight, RateLimit, ResumeReservation, Schedule, SessionInfo, TranscriptMsg } from "./types";
+import type { NeedsYou, Project, Preflight, RateLimit, ResumeReservation, Schedule, SessionInfo, TranscriptMsg, Worktree, WorktreeCleanup } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -36,6 +36,8 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     }
     return (r as any).json();
   };
+  // 격리 세션이면 데몬이 세션으로 그 트리를 찾는다 — 일반 세션·세션 없음은 원래 트리
+  const sq = (session?: string) => (session ? `?session=${encodeURIComponent(session)}` : "");
   return {
     projects: (): Promise<Project[]> => jget("/projects"),
     preflight: (): Promise<Preflight> => jget("/preflight"),
@@ -43,12 +45,12 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
     diff: (path: string, run?: string) => jget(`/diff?path=${encodeURIComponent(path)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
     diffFile: (path: string, file: string, run?: string): Promise<{ file: string; diff: string }> =>
       jget(`/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}${run ? `&scope=turn&run=${encodeURIComponent(run)}` : ""}`),
-    gitDraft: (project: string): Promise<{ message: string; on_default: boolean }> => jget(`/git/${encodeURIComponent(project)}/draft`),
-    gitCommit: (project: string, message: string, branch?: string): Promise<{ output: string }> =>
-      jpost(`/git/${encodeURIComponent(project)}/commit`, branch ? { message, branch } : { message }),
-    gitPush: (project: string): Promise<{ output: string }> => jpost(`/git/${encodeURIComponent(project)}/push`, {}),
-    gitPr: (project: string, title: string, body?: string): Promise<{ output: string }> =>
-      jpost(`/git/${encodeURIComponent(project)}/pr`, { title, body: body ?? "" }),
+    gitDraft: (project: string, session?: string): Promise<{ message: string; on_default: boolean }> => jget(`/git/${encodeURIComponent(project)}/draft${sq(session)}`),
+    gitCommit: (project: string, message: string, branch?: string, session?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/commit${sq(session)}`, branch ? { message, branch } : { message }),
+    gitPush: (project: string, session?: string): Promise<{ output: string }> => jpost(`/git/${encodeURIComponent(project)}/push${sq(session)}`, {}),
+    gitPr: (project: string, title: string, body?: string, session?: string): Promise<{ output: string }> =>
+      jpost(`/git/${encodeURIComponent(project)}/pr${sq(session)}`, { title, body: body ?? "" }),
     status: (runId: string) => jget(`/status/${runId}`),
     activeRun: (project: string): Promise<{ run_id: string | null; queued: number; session?: string | null; forked_from?: string | null }> =>
       jget(`/runs/active/${encodeURIComponent(project)}`),
@@ -84,7 +86,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       return jget(`/sessions/${encodeURIComponent(project)}${qs ? `?${qs}` : ""}`);
     },
     /** name: null·빈 문자열이면 이름 제거, 키를 빼면 그대로 */
-    sessionMeta: (project: string, sessionId: string, body: { name?: string | null; archived?: boolean }): Promise<{ name?: string; archived?: boolean }> =>
+    sessionMeta: (project: string, sessionId: string, body: { name?: string | null; archived?: boolean }): Promise<{ name?: string; archived?: boolean; worktree?: WorktreeCleanup }> =>
       jpost(`/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/meta`, body),
     transcript: (project: string, sessionId: string, from = 0): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?from=${from}`),
@@ -92,19 +94,24 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?tail=1`),
     transcriptBefore: (project: string, sessionId: string, until: number): Promise<{ messages: TranscriptMsg[]; next: number; active: boolean; prev: number | null }> =>
       jget(`/transcript/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}?until=${until}&limit=50`),
-    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, mode?: string, model?: string, effort?: string, newSession?: boolean) => {
+    chat: async (project: string, prompt: string, plan: boolean, resumeSessionId?: string, mode?: string, model?: string, effort?: string, newSession?: boolean, isolate?: boolean) => {
       const body: Record<string, unknown> = { prompt, plan };
       if (newSession) body.new_session = true;
+      if (isolate) body.isolate = true;
       if (mode) body.mode = mode;
       if (model) body.model = model;
       if (effort) body.effort = effort;
       if (resumeSessionId) body.resume_session_id = resumeSessionId;
       const r = await f(`${baseUrl}/chat/${encodeURIComponent(project)}`, { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify(body) } as any);
-      if (!(r as any).ok) throw new HttpError((r as any).status, `/chat/${project}`);
-      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null }>;
+      if (!(r as any).ok) {
+        const e = new HttpError((r as any).status, `/chat/${project}`);
+        try { e.message = (await (r as any).text()) || e.message; } catch {} // 격리 트리 만들기 실패 사유 등 — 본문 없으면 상태만
+        throw e;
+      }
+      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null; worktree?: Worktree }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
-    endSession: async (project: string, sessionId: string): Promise<{ ended: boolean; pid: number }> => {
+    endSession: async (project: string, sessionId: string): Promise<{ ended: boolean; pid: number | null; worktree?: WorktreeCleanup }> => {
       const p = `/sessions/${encodeURIComponent(project)}/${encodeURIComponent(sessionId)}/end`;
       const r = await f(`${baseUrl}${p}`, { method: "POST", headers: h } as any);
       if (!(r as any).ok) throw new HttpError((r as any).status, p);

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeClient } from "../src/lib/api";
 import { fetchNeeds, NEEDS_POLL_MS, type PcNeeds } from "../src/lib/needs";
 import { permView } from "../src/lib/permSummary";
-import { formatUpdated } from "../src/lib/sessions";
+import { formatUpdated, sessionPathParams } from "../src/lib/sessions";
 import { loadPCs } from "../src/store/pcs";
 import { font, radius, space, useTheme, type Theme } from "../src/lib/theme";
 import { Button, EmptyState, Icon, ListRow } from "../src/components/ui";
@@ -96,7 +96,7 @@ export default function Needs() {
           key={`${pc.id}:${s.project}:${s.session_id}`}
           title={s.name || s.preview || "제목 없는 대화"}
           subtitle={`${s.project}${multiPc ? ` · ${pc.label}` : ""} · ${formatUpdated(s.updated)}`}
-          onPress={() => router.push({ pathname: "/chat/[project]", params: { pc: pc.id, project: s.project, path: s.path, session: s.session_id } })}
+          onPress={() => router.push({ pathname: "/chat/[project]", params: { pc: pc.id, project: s.project, ...sessionPathParams(s, s.path), session: s.session_id } })}
           right={<Icon name="chevron-right" size={24} color={t.subtext} />}
         >
           {s.answer_preview ? <Text style={styles.question} numberOfLines={2}>{s.answer_preview}</Text> : null}

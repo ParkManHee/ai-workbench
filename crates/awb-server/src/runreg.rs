@@ -11,6 +11,8 @@ pub struct RunMeta {
     pub notified: bool,
     /// 터미널 세션을 갈라 실행했으면 그 원본 ID
     pub fork_of: Option<String>,
+    /// 격리 트리에서 돌면 그 트리(workdir 와 같은 경로)
+    pub worktree: Option<crate::worktree::Worktree>,
 }
 
 #[derive(Clone)]
@@ -75,7 +77,7 @@ mod tests {
     #[test]
     fn mark_notified_transitions_once() {
         let r = RunRegistry::new();
-        r.insert("run1", RunMeta { log: "l".into(), pgid: 10, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None });
+        r.insert("run1", RunMeta { log: "l".into(), pgid: 10, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None });
         assert!(r.mark_notified("run1"));   // 첫 호출 true
         assert!(!r.mark_notified("run1"));   // 두번째 false(중복 방지)
         assert!(!r.mark_notified("absent")); // 없는 run false

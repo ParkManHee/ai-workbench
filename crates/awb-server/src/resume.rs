@@ -87,7 +87,7 @@ pub fn spawn_scheduler(st: crate::routes::AppState) {
 /// /chat 과 같은 경로(잠금·큐 포함)로 "계속" 을 보낸다.
 async fn fire(st: &crate::routes::AppState, project: String, r: Reservation) {
     let body = crate::routes::ChatBody {
-        prompt: "계속".into(), plan: false, resume_session_id: Some(r.session_id.clone()), mode: r.mode, model: r.model, effort: r.effort, new_session: false,
+        prompt: "계속".into(), plan: false, resume_session_id: Some(r.session_id.clone()), mode: r.mode, model: r.model, effort: r.effort, new_session: false, isolate: false,
     };
     let res = crate::routes::chat_handler(axum::extract::State(st.clone()), axum::extract::Path(project.clone()), axum::Json(body)).await;
     if let Err((code, e)) = res {

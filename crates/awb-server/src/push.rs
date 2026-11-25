@@ -186,6 +186,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                         "hostname": crate::routes::resolve_hostname(),
                         "path": meta.workdir,
                         "session": st.sessions.get(&meta.project),
+                        "branch": meta.worktree.as_ref().map(|w| w.branch.clone()),
                     });
                     send_data(&st.push.list(), &data);
                 }
@@ -202,6 +203,10 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                 // (WS 루프는 라인 단위로 파싱하지만, 여기선 WS가 없었을 수 있으므로 로그 전체를 읽어 찾는다.)
                 if let Some(sid) = crate::sessions::capture_session_id_from_log(&meta.log) {
                     st.sessions.record(&meta.project, &sid, meta.fork_of.as_deref());
+                    crate::worktree::note(&st, &meta, &sid);
+                } else if let Some(wt) = &meta.worktree {
+                    // 세션을 잡기 전에 끝난 격리 실행(시작 실패)은 끝내기·보관할 세션이 없다 — 빈 트리를 여기서 정리한다
+                    eprintln!("격리 실행 {run_id}: 세션 없이 종료 — 트리 정리 {}", crate::worktree::cleanup_json(&st, wt));
                 }
                 // shortcut: 데몬이 run 도중 재시작되면 progress_end 가 안 가 고정 알림이 남는다(탭하면 지워짐), 기기에서 겪으면 앱 시작 시 정리로 올린다
                 if progress.sent_any() {
@@ -222,12 +227,13 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                         "project": meta.project,
                         "path": meta.workdir,
                         "session": st.sessions.get(&meta.project),
+                        "branch": meta.worktree.as_ref().map(|w| w.branch.clone()),
                     });
                     send(&tokens, &title, &body, &data);
                 }
                 st.runs.remove(&run_id); // 완료된 run은 레지스트리에서 제거(취소/완료 후 무한 누적 방지)
                 // 대기 중인 후속 턴이 있으면 이어서 실행(락이 방금 해제됨)
-                crate::queue::spawn_drain(st.clone(), meta.project.clone(), meta.workdir.clone());
+                crate::queue::spawn_drain(st.clone(), meta.project.clone(), meta.worktree.as_ref().map_or_else(|| meta.workdir.clone(), |w| w.repo.clone()));
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -245,7 +251,7 @@ mod tests {
         let r = RunRegistry::new();
         r.insert(
             "x",
-            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None },
+            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None },
         );
         // WS가 먼저 전달한 경우
         assert!(r.mark_notified("x")); // WS가 소비
@@ -254,7 +260,7 @@ mod tests {
         // WS가 없던 경우
         r.insert(
             "y",
-            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None },
+            RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
     }

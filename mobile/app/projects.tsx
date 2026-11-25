@@ -15,7 +15,7 @@ import type { PC, Preflight, Project, SessionInfo } from "../src/lib/types";
 import { getPC, removePC } from "../src/store/pcs";
 import { font, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
 import { Button, EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
-import { formatUpdated, isActiveSession } from "../src/lib/sessions";
+import { formatUpdated, isActiveSession, sessionPathParams } from "../src/lib/sessions";
 
 /** 프로젝트 아래에 붙이는 지난 대화 수 — 활성 세션은 개수와 무관하게 전부 보인다 */
 const RECENT = 3;
@@ -170,7 +170,7 @@ export default function Projects() {
   function handleSessionPress(project: Project, session: SessionInfo) {
     router.push({
       pathname: "/chat/[project]",
-      params: { pc: pcId, project: project.name, path: project.path, session: session.session_id },
+      params: { pc: pcId, project: project.name, ...sessionPathParams(session, project.path), session: session.session_id },
     });
   }
 

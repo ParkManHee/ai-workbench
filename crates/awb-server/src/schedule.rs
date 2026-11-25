@@ -128,7 +128,7 @@ pub async fn run_due(st: &crate::routes::AppState) {
 /// /chat 과 같은 경로(잠금·큐·완료 푸시 포함)로 새 세션을 연다. 시작 실패는 완료 푸시가 없으니 따로 알린다.
 async fn fire(st: &crate::routes::AppState, s: Schedule) {
     let body = crate::routes::ChatBody {
-        prompt: s.prompt.clone(), plan: false, resume_session_id: None, mode: s.mode, model: s.model, effort: s.effort, new_session: true,
+        prompt: s.prompt.clone(), plan: false, resume_session_id: None, mode: s.mode, model: s.model, effort: s.effort, new_session: true, isolate: false,
     };
     let res = crate::routes::chat_handler(axum::extract::State(st.clone()), axum::extract::Path(s.project.clone()), axum::Json(body)).await;
     match res {

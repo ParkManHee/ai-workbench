@@ -17,7 +17,13 @@ export interface PC { id: string; label: string; baseUrl: string; token: string;
   /** 페어링 응답의 device_id — 기기 목록에서 이 폰을 가리킨다. 이 필드 이전에 페어링한 PC 엔 없다 */
   deviceId?: string }
 /** 데몬 `/sessions/:project` 응답 항목. */
-export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean; name?: string | null; archived?: boolean }
+export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean; name?: string | null; archived?: boolean;
+  /** 격리 트리에서 돈 세션이면 그 트리. 옛 데몬은 보내지 않는다 */
+  worktree?: Worktree }
+/** 폰 격리 실행의 작업 트리(`<저장소>.wt-phone-<id>`, 브랜치 claude/phone-<id>). removed 면 정리돼 이어갈 수 없다 */
+export interface Worktree { path: string; branch: string; removed?: boolean }
+/** 세션 끝내기·보관 때 격리 트리 정리 결과 — removed=false 면 reason 이 남긴 이유 */
+export interface WorktreeCleanup { path: string; branch: string; removed: boolean; branch_deleted?: boolean; reason?: string }
 /** 데몬 `/transcript/:project/:sessionId` 응답의 메시지 항목. */
 export interface TranscriptMsg { role: string; text: string; tools: string[]; tool_details: string[]; options?: string[]; todos?: string[] }
 /** /info.rate_limit — claude 스트림의 마지막 rate_limit_event. status: allowed | allowed_warning | rejected(차단) */

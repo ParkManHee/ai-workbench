@@ -20,7 +20,7 @@ import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
 import { Button, EmptyState, Icon, keepWords, ListRow, SheetFrame, StatusBadge } from "../../src/components/ui";
-import { formatUpdated, isActiveSession as isActive } from "../../src/lib/sessions";
+import { cleanupMessage, formatUpdated, isActiveSession as isActive, sessionPathParams } from "../../src/lib/sessions";
 
 
 export default function Sessions() {
@@ -127,7 +127,7 @@ export default function Sessions() {
   function handlePress(item: SessionInfo) {
     router.push({
       pathname: "/chat/[project]",
-      params: { pc: pcId, project, path, session: item.session_id },
+      params: { pc: pcId, project, ...sessionPathParams(item, path), session: item.session_id },
     });
   }
 
@@ -136,7 +136,9 @@ export default function Sessions() {
     setEnding(item.session_id);
     try {
       const r = await makeClient(pc.baseUrl, pc.token).endSession(project, item.session_id);
-      if (!r.ended && Platform.OS === "android") {
+      if (r.worktree && Platform.OS === "android") {
+        ToastAndroid.show(cleanupMessage(r.worktree), ToastAndroid.LONG);
+      } else if (!r.ended && Platform.OS === "android") {
         ToastAndroid.show("아직 종료되지 않았습니다. 잠시 후 다시 확인하세요", ToastAndroid.LONG);
       }
       await load(pc, true);
@@ -167,7 +169,8 @@ export default function Sessions() {
   async function saveMeta(item: SessionInfo, body: { name?: string | null; archived?: boolean }) {
     if (!pc) return;
     try {
-      await makeClient(pc.baseUrl, pc.token).sessionMeta(project, item.session_id, body);
+      const r = await makeClient(pc.baseUrl, pc.token).sessionMeta(project, item.session_id, body);
+      if (r.worktree && Platform.OS === "android") ToastAndroid.show(cleanupMessage(r.worktree), ToastAndroid.LONG);
     } catch (e) {
       if (isUnauthorized(e)) {
         await removePC(pc.id);
@@ -194,6 +197,20 @@ export default function Sessions() {
               0,
             ),
     };
+    // 터미널에 안 열린 격리 세션 — 끝낼 프로세스는 없고 트리만 정리한다
+    const endIsolated = {
+      label: "세션 끝내기 · 격리 트리 정리",
+      onPress: () =>
+        setTimeout(
+          () =>
+            setSheet({
+              title: "격리 트리를 정리할까요?",
+              message: `변경이나 새 커밋이 없으면 트리와 브랜치 ${item.worktree?.branch ?? ""} 를 지웁니다. 있으면 남깁니다.`,
+              choices: [{ label: "정리", onPress: () => endLive(item) }],
+            }),
+          0,
+        ),
+    };
     setSheet({
       title: item.name || item.preview || "(빈 대화)",
       choices: [
@@ -205,7 +222,7 @@ export default function Sessions() {
           },
         },
         { label: item.archived ? "보관 해제" : "보관", onPress: () => saveMeta(item, { archived: !item.archived }) },
-        ...(item.live ? [end] : []),
+        ...(item.live ? [end] : item.worktree && !item.worktree.removed ? [endIsolated] : []),
       ],
     });
   }

@@ -14,6 +14,7 @@ mod runreg;
 mod schedule;
 mod sessions;
 mod streamevt;
+mod worktree;
 mod ws;
 
 #[tokio::main]

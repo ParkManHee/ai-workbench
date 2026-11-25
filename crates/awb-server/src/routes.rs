@@ -73,12 +73,13 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
 }
 
 fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashSet<String>) -> Vec<ProjectDto> {
-    awb_core::scan::scan_roots(&st.roots).into_iter().map(|p| {
+    // 격리 트리도 origin 있는 git 루트라 스캔에 걸린다 — 그 세션은 원래 프로젝트 아래에 보이므로 따로 세우지 않는다
+    let trees = crate::worktree::store(st).paths();
+    awb_core::scan::scan_roots(&st.roots).into_iter().filter(|p| !trees.contains(&p.path)).map(|p| {
         let badge = awb_core::worklog::badge_for(&p.name);
         let slug = awb_core::transcript::project_slug(&p.path);
         let agent_status = awb_core::transcript::project_status(&slug);
-        let list = awb_core::transcript::list_open_sessions_in(&format!("{tx_root}/{slug}"), live_ids);
-        let sessions = crate::sessions::filter_rows(list, &st.sessions.metas(&p.name), None, false);
+        let sessions = crate::worktree::project_sessions(st, &p.name, &p.path, tx_root, live_ids, None, false);
         ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status, sessions }
     }).collect()
 }
@@ -133,6 +134,16 @@ fn project_path(st: &AppState, project: &str) -> Result<String, (StatusCode, Str
         .ok_or((StatusCode::NOT_FOUND, "unknown project".into()))
 }
 
+#[derive(serde::Deserialize)]
+pub struct GitQuery { #[serde(default)] pub session: Option<String> }
+
+/// session 이 격리 세션이면 그 트리, 아니면(없거나 일반 세션) 원래 트리. 경로는 서버 매핑에서만 — 앱이 경로를 주입하지 않는다
+fn git_path(st: &AppState, project: &str, q: &GitQuery) -> Result<String, (StatusCode, String)> {
+    let path = project_path(st, project)?;
+    let wt = crate::worktree::for_resume(st, project, q.session.as_deref()).map_err(|e| (StatusCode::CONFLICT, e))?;
+    Ok(wt.map_or(path, |w| w.path))
+}
+
 /// git/gh 는 수 초~수십 초 걸린다(push·PR) — 런타임 워커를 막지 않게 블로킹 풀에서.
 async fn git_blocking(f: impl FnOnce() -> Result<String, (StatusCode, String)> + Send + 'static) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let out = tokio::task::spawn_blocking(f).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
@@ -142,27 +153,27 @@ async fn git_blocking(f: impl FnOnce() -> Result<String, (StatusCode, String)> +
 #[derive(serde::Deserialize)]
 pub struct CommitBody { pub message: String, #[serde(default)] pub branch: Option<String> }
 
-pub async fn git_commit_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<CommitBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let path = project_path(&st, &project)?;
+pub async fn git_commit_handler(State(st): State<AppState>, Path(project): Path<String>, Query(gq): Query<GitQuery>, Json(b): Json<CommitBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = git_path(&st, &project, &gq)?;
     git_blocking(move || crate::gitdiff::commit(&path, &b.message, b.branch.as_deref())).await
 }
 
-pub async fn git_push_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let path = project_path(&st, &project)?;
+pub async fn git_push_handler(State(st): State<AppState>, Path(project): Path<String>, Query(gq): Query<GitQuery>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = git_path(&st, &project, &gq)?;
     git_blocking(move || crate::gitdiff::push(&path)).await
 }
 
 #[derive(serde::Deserialize)]
 pub struct PrBody { pub title: String, #[serde(default)] pub body: String }
 
-pub async fn git_pr_handler(State(st): State<AppState>, Path(project): Path<String>, Json(b): Json<PrBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let path = project_path(&st, &project)?;
+pub async fn git_pr_handler(State(st): State<AppState>, Path(project): Path<String>, Query(gq): Query<GitQuery>, Json(b): Json<PrBody>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = git_path(&st, &project, &gq)?;
     git_blocking(move || crate::gitdiff::pr(&path, &b.title, &b.body)).await
 }
 
 /// 커밋 메시지 초안(haiku 한 줄) + 기본 브랜치 여부(앱이 브랜치 이름 칸을 띄울지). 초안 실패는 빈 문자열.
-pub async fn git_draft_handler(State(st): State<AppState>, Path(project): Path<String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let path = project_path(&st, &project)?;
+pub async fn git_draft_handler(State(st): State<AppState>, Path(project): Path<String>, Query(gq): Query<GitQuery>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = git_path(&st, &project, &gq)?;
     let (input, on_default) = tokio::task::spawn_blocking(move || (crate::gitdiff::draft_input(&path), crate::gitdiff::on_default_branch(&path)))
         .await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut message = String::new();
@@ -206,7 +217,9 @@ const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "auto", "bypassPe
 pub(crate) fn default_mode() -> String { "auto".into() }
 
 #[derive(serde::Deserialize)]
-pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String>, #[serde(default)] pub new_session: bool }
+pub struct ChatBody { pub prompt: String, #[serde(default)] pub plan: bool, #[serde(default)] pub resume_session_id: Option<String>, #[serde(default = "default_mode")] pub mode: String, #[serde(default)] pub model: Option<String>, #[serde(default)] pub effort: Option<String>, #[serde(default)] pub new_session: bool,
+    /// 새 대화 첫 메시지에서만 — 원래 트리 옆 격리 트리(claude/phone-<id>)를 만들어 거기서 돈다. 옛 앱은 보내지 않는다
+    #[serde(default)] pub isolate: bool }
 #[derive(Serialize)]
 pub struct ChatResult {
     pub run_id: Option<String>,
@@ -214,6 +227,9 @@ pub struct ChatResult {
     /// true면 실행 중이라 큐에 적재됨(position = 대기 순번). 현재 턴 종료 시 자동 실행.
     pub queued: bool,
     pub position: Option<usize>,
+    /// 격리 트리에서 돌면 그 트리 — 앱이 변경 보기·이어받기 경로와 브랜치 표시에 쓴다
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::worktree::Worktree>,
 }
 
 /// new_session 이면 저장된 마지막 세션을 쓰지 않는다 — 앱 "+ 새 대화" 의 첫 전송이 이전 대화를 잇던 것
@@ -232,23 +248,40 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
         if !EFFORT_LEVELS.contains(&e) { return Err((StatusCode::BAD_REQUEST, format!("unknown effort: {e}"))); }
     }
     if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
-    let (resume, fork_of) = resolve_resume(&st, &project, b.resume_session_id.clone(), b.new_session);
+    // 진행 중인 대화를 중간에 격리로 옮기지 않는다 — 이미 원래 트리에 쓴 변경과 대화가 갈린다
+    if b.isolate && b.resume_session_id.is_some() { return Err((StatusCode::BAD_REQUEST, "격리는 새 대화의 첫 메시지에서만 켤 수 있습니다".into())); }
+    let (resume, fork_of) = if b.isolate { (None, None) } else { resolve_resume(&st, &project, b.resume_session_id.clone(), b.new_session) };
+    let wt = if b.isolate {
+        let (p, repo) = (project.clone(), proj.path.clone());
+        let wt = tokio::task::spawn_blocking(move || crate::worktree::create(&p, &repo)).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| (StatusCode::CONFLICT, format!("격리 트리를 만들지 못했습니다: {e}")))?;
+        crate::worktree::store(&st).add(&wt).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("격리 트리 기록 실패({}): {e}", wt.path)))?;
+        Some(wt)
+    } else {
+        crate::worktree::for_resume(&st, &project, resume.as_deref()).map_err(|e| (StatusCode::CONFLICT, e))?
+    };
+    let workdir = wt.as_ref().map_or_else(|| proj.path.clone(), |w| w.path.clone());
     let mcp_cfg = approval_mcp_cfg_for(&st, &project, &b.mode);
-    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &proj.path, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref(), &b.mode) {
+    let h = match awb_core::runner::start_stream_run(&st.claude_bin, &workdir, &st.settings_path, b.plan, &b.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), b.model.as_deref(), b.effort.as_deref(), &b.mode) {
         Ok(h) => h,
         // 이미 실행 중 → 409 거부 대신 큐 적재(현재 턴 종료 시 자동 실행)
         Err(e) if e.contains("이미 실행 중") => {
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
                 prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), mode: b.mode.clone(), model: b.model.clone(), effort: b.effort.clone(), new_session: b.new_session,
             });
-            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos) }));
+            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos), worktree: wt }));
         }
-        Err(e) => return Err((StatusCode::CONFLICT, e)),
+        Err(e) => {
+            // 방금 만든 빈 트리를 남기지 않는다(변경·커밋이 없을 때만 지워진다)
+            if b.isolate { if let Some(w) = &wt { crate::worktree::cleanup_json(&st, w); } }
+            return Err((StatusCode::CONFLICT, e));
+        }
     };
     let run_id = run_id_of(&h.log);
-    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir: proj.path.clone(), project: project.clone(), notified: false, fork_of });
+    st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir, project: project.clone(), notified: false, fork_of, worktree: wt.clone() });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
-    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None }))
+    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None, worktree: wt }))
 }
 
 pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<Json<awb_core::runlog::RunStatus>, StatusCode> {
@@ -534,8 +567,7 @@ pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>, Query(sq): Query<SessionsQuery>) -> Result<Json<Vec<crate::sessions::SessionRow>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    let list = awb_core::transcript::list_open_sessions(&awb_core::transcript::project_slug(&proj.path));
-    Ok(Json(crate::sessions::filter_rows(list, &st.sessions.metas(&project), sq.q.as_deref(), sq.archived == 1)))
+    Ok(Json(crate::worktree::project_sessions(&st, &project, &proj.path, &awb_core::transcript::projects_root(), &awb_core::live::live_interactive_ids(), sq.q.as_deref(), sq.archived == 1)))
 }
 
 #[derive(serde::Deserialize)]
@@ -546,10 +578,18 @@ pub struct SessionMetaBody {
 }
 
 /// 세션 이름·보관 — 데몬 메타 파일에만 쓰고 트랜스크립트는 건드리지 않는다.
-pub async fn session_meta_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Json(b): Json<SessionMetaBody>) -> Result<Json<crate::sessions::SessionMeta>, StatusCode> {
+/// 격리 세션을 보관하면 그 트리를 정리하고(변경·새 커밋이 있으면 남긴다) 결과를 worktree 에 싣는다.
+pub async fn session_meta_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Json(b): Json<SessionMetaBody>) -> Result<Json<serde_json::Value>, StatusCode> {
     if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    st.sessions.set_meta(&project, &session_id, b.name, b.archived).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let archiving = b.archived == Some(true);
+    let m = st.sessions.set_meta(&project, &session_id, b.name, b.archived).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut v = serde_json::to_value(&m).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let (true, Ok(Some(wt))) = (archiving, crate::worktree::for_resume(&st, &project, Some(&session_id))) {
+        let st2 = st.clone();
+        v["worktree"] = tokio::task::spawn_blocking(move || crate::worktree::cleanup_json(&st2, &wt)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(Json(v))
 }
 
 #[derive(serde::Deserialize)]
@@ -558,8 +598,7 @@ pub struct TxQuery { #[serde(default)] pub from: usize, pub tail: Option<u8>, pu
 pub async fn transcript_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>, Query(q): Query<TxQuery>) -> Result<Json<serde_json::Value>, StatusCode> {
     if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    let slug = awb_core::transcript::project_slug(&proj.path);
-    let path = format!("{}/.claude/projects/{}/{}.jsonl", std::env::var("HOME").unwrap_or_default(), slug, session_id);
+    let path = crate::worktree::transcript_file(&st, &project, &proj.path, &session_id);
     if q.tail == Some(1) {
         // 최초 로드: 최근 1시간(최대 limit, 기본 100), 없으면 마지막 20개 폴백
         let page = awb_core::transcript::read_transcript_page(&path, None, q.limit.unwrap_or(100), 3600);
@@ -575,17 +614,29 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
 }
 
 /// PC 터미널에서 열린 대화형 세션을 앱에서 끝낸다. 레지스트리·시작시각·cwd 가 모두 맞는 pid 에만 신호를 보낸다.
+/// 격리 세션이면 (터미널에 열려 있지 않아도) 끝난 뒤 그 트리를 정리하고 결과를 worktree 에 싣는다.
 pub async fn session_end_handler(State(st): State<AppState>, Path((project, session_id)): Path<(String, String)>) -> Result<Json<serde_json::Value>, StatusCode> {
     if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    let ended = tokio::task::spawn_blocking(move || {
-        let e = awb_core::live::find_live(&session_id)?;
-        // 다른 프로젝트의 세션을 이 경로로 끄지 못하게
-        if !e.cwd.as_deref().is_some_and(|c| awb_core::live::same_dir(c, &proj.path)) { return None; }
-        awb_core::live::terminate(e.pid, &e.proc_start, awb_core::live::proc_lstart).map(|ended| (ended, e.pid))
-    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let (ended, pid) = ended.ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(serde_json::json!({ "ended": ended, "pid": pid })))
+    let wt = crate::worktree::for_resume(&st, &project, Some(&session_id)).ok().flatten();
+    let st2 = st.clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = wt.as_ref().map_or(proj.path.as_str(), |w| w.path.as_str());
+        let term = awb_core::live::find_live(&session_id).and_then(|e| {
+            // 다른 프로젝트의 세션을 이 경로로 끄지 못하게
+            if !e.cwd.as_deref().is_some_and(|c| awb_core::live::same_dir(c, dir)) { return None; }
+            awb_core::live::terminate(e.pid, &e.proc_start, awb_core::live::proc_lstart).map(|ended| (ended, e.pid))
+        });
+        let Some(wt) = wt else {
+            let (ended, pid) = term.ok_or(StatusCode::NOT_FOUND)?;
+            return Ok(Json(serde_json::json!({ "ended": ended, "pid": pid })));
+        };
+        // 터미널에 열려 있지 않으면 끝낼 프로세스가 없다 = 이미 끝남
+        let ended = term.is_none_or(|(e, _)| e);
+        let tree = if ended { crate::worktree::cleanup_json(&st2, &wt) }
+            else { serde_json::json!({ "path": wt.path, "branch": wt.branch, "removed": false, "reason": "터미널 claude 가 아직 종료 중" }) };
+        Ok(Json(serde_json::json!({ "ended": ended, "pid": term.map(|(_, p)| p), "worktree": tree })))
+    }).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
 }
 
 #[derive(serde::Deserialize)]
@@ -785,7 +836,7 @@ mod tests {
         let state = test_state("/tmp", &devices_path);
         let log = tmp("awb_routes_perm_sess.log");
         std::fs::write(&log, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid-perm\"}\n").unwrap();
-        state.runs.insert("run-perm", crate::runreg::RunMeta { log, pgid: 0, workdir: "/tmp".into(), project: "psess".into(), notified: false, fork_of: None });
+        state.runs.insert("run-perm", crate::runreg::RunMeta { log, pgid: 0, workdir: "/tmp".into(), project: "psess".into(), notified: false, fork_of: None, worktree: None });
         let request = |tool: &'static str| {
             let st = state.clone();
             tokio::spawn(async move {
@@ -1070,7 +1121,7 @@ mod tests {
         let devices_path = tmp("awb_routes_devices_done_rl.json"); let _ = std::fs::remove_file(&devices_path);
         let state = test_state("/tmp", &devices_path);
         state.devices.add("tok-rl", "test-device");
-        let meta = crate::runreg::RunMeta { log, pgid: 0, workdir: dir.to_string_lossy().to_string(), project: "p".into(), notified: false, fork_of: None };
+        let meta = crate::runreg::RunMeta { log, pgid: 0, workdir: dir.to_string_lossy().to_string(), project: "p".into(), notified: false, fork_of: None, worktree: None };
         state.runs.insert("r", meta.clone());
         crate::ws::finish(&state, &meta, "r", None);
         let res = crate::routes::router(state).oneshot(Request::builder().uri("/info").header("authorization", "Bearer tok-rl").body(Body::empty()).unwrap()).await.unwrap();
@@ -1089,5 +1140,152 @@ mod tests {
         let res = app.oneshot(Request::builder().uri("/pair?code=WRONG1").body(Body::empty()).unwrap()).await.unwrap();
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── 폰 격리 트리 ──
+    fn sh_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let o = std::process::Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+    /// origin 이 있고 커밋이 하나 있는 저장소(스캔에 걸리고 HEAD 가 있다)
+    fn origin_repo(dir: &std::path::Path) -> String {
+        std::fs::create_dir_all(dir).unwrap();
+        sh_git(dir, &["init", "-q"]);
+        sh_git(dir, &["remote", "add", "origin", "x"]);
+        sh_git(dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        std::fs::canonicalize(dir).unwrap().to_string_lossy().to_string()
+    }
+    /// 다른 테스트와 파일을 나누지 않는 상태 — 매핑·푸시 토큰·run 로그를 이 테스트 전용으로
+    fn iso_state(base: &std::path::Path) -> AppState {
+        let mut st = test_state(base.join("repos").to_str().unwrap(), base.join("devices.json").to_str().unwrap());
+        st.sessions = crate::sessions::SessionStore::load(base.join("sessions").to_str().unwrap());
+        st.push = crate::push::PushStore::load(base.join("push.json").to_str().unwrap());
+        st.runs_dir = base.join("runs").to_string_lossy().to_string();
+        st
+    }
+    async fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
+        for _ in 0..100 { if f() { return; } tokio::time::sleep(std::time::Duration::from_millis(100)).await; }
+        panic!("시간 안에 안 됨: {what}");
+    }
+
+    #[tokio::test]
+    async fn isolated_chat_runs_in_worktree_and_resume_follows_it() {
+        let base = std::env::temp_dir().join("awb_iso_chat"); let _ = std::fs::remove_dir_all(&base);
+        let repo = origin_repo(&base.join("repos").join("isodemo"));
+        let branch_before = sh_git(std::path::Path::new(&repo), &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let mut st = iso_state(&base);
+        let fake = base.join("fakeclaude");
+        std::fs::write(&fake, "#!/bin/sh\necho '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid-iso-chat\"}'\npwd\n").unwrap();
+        { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); }
+        st.claude_bin = fake.to_string_lossy().to_string();
+        let send = |v: serde_json::Value| { let st = st.clone(); async move { chat_handler(State(st), Path("isodemo".into()), Json(serde_json::from_value::<ChatBody>(v).unwrap())).await } };
+        let done = |log: &str| { let l = log.to_string(); move || std::path::Path::new(&format!("{l}.done")).exists() };
+
+        // 진행 중인 대화를 격리로 옮기지 않는다
+        let r = send(serde_json::json!({ "prompt": "hi", "isolate": true, "resume_session_id": "old" })).await;
+        assert!(matches!(r, Err((StatusCode::BAD_REQUEST, _))));
+
+        let r = send(serde_json::json!({ "prompt": "hi", "isolate": true, "new_session": true, "mode": "bypassPermissions" })).await.unwrap().0;
+        let wt = r.worktree.expect("격리 실행은 트리를 돌려준다");
+        assert!(wt.path.starts_with(&format!("{repo}.wt-phone-")), "{}", wt.path);
+        assert!(wt.branch.starts_with("claude/phone-"));
+        assert_eq!(sh_git(std::path::Path::new(&wt.path), &["rev-parse", "--abbrev-ref", "HEAD"]), wt.branch);
+        assert_eq!(sh_git(std::path::Path::new(&repo), &["rev-parse", "--abbrev-ref", "HEAD"]), branch_before, "원래 트리 브랜치는 그대로");
+        let log = r.log.unwrap();
+        wait_for("첫 실행 종료", done(&log)).await;
+        assert!(std::fs::read_to_string(&log).unwrap().lines().any(|l| l == wt.path), "cwd 가 격리 트리여야 한다");
+
+        // 완료 워처가 세션을 트리에 묶은 뒤 — 이어 보내면 같은 트리에서 돈다
+        let store = crate::worktree::store(&st);
+        wait_for("세션 매핑", || store.for_session("sid-iso-chat").is_some()).await;
+        let r2 = send(serde_json::json!({ "prompt": "more", "resume_session_id": "sid-iso-chat", "mode": "bypassPermissions" })).await.unwrap().0;
+        assert_eq!(r2.worktree.as_ref().map(|w| w.path.as_str()), Some(wt.path.as_str()));
+        let log2 = r2.log.unwrap();
+        wait_for("이어 보낸 실행 종료", done(&log2)).await;
+        assert!(std::fs::read_to_string(&log2).unwrap().lines().any(|l| l == wt.path), "이어 보낸 실행도 격리 트리에서");
+        // 격리를 끈 새 대화는 원래 트리에서
+        let r3 = send(serde_json::json!({ "prompt": "plain", "new_session": true, "mode": "bypassPermissions" })).await.unwrap().0;
+        assert!(r3.worktree.is_none());
+        let log3 = r3.log.unwrap();
+        wait_for("일반 실행 종료", done(&log3)).await;
+        assert!(std::fs::read_to_string(&log3).unwrap().lines().any(|l| l == repo));
+        wait_for("일반 실행 락 해제", || !awb_core::lock::held(&repo)).await;
+        let _ = std::process::Command::new("git").args(["-C", &repo, "worktree", "remove", &wt.path]).output();
+    }
+
+    #[test]
+    fn worktree_sessions_listed_under_original_project() {
+        let base = std::env::temp_dir().join("awb_iso_list"); let _ = std::fs::remove_dir_all(&base);
+        let repo = origin_repo(&base.join("repos").join("lp-proj"));
+        // 격리 트리도 origin 있는 git 루트라 스캔에 걸린다 — 따로 프로젝트로 세우지 않아야 한다
+        let wt_path = origin_repo(&base.join("repos").join("lp-proj.wt-phone-abc123"));
+        let st = iso_state(&base);
+        crate::worktree::store(&st).add(&crate::worktree::Worktree {
+            project: "lp-proj".into(), repo: repo.clone(), path: wt_path.clone(), branch: "claude/phone-abc123".into(), base: "x".into(), removed: false,
+        }).unwrap();
+        let tx_root = base.join("tx");
+        let line = "{\"type\":\"user\",\"entrypoint\":\"sdk-cli\",\"message\":{\"role\":\"user\",\"content\":\"질문\"}}\n";
+        for (dir, sid) in [(&repo, "s-main"), (&wt_path, "s-iso")] {
+            let d = tx_root.join(awb_core::transcript::project_slug(dir)); std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("{sid}.jsonl")), line).unwrap();
+        }
+        let v = serde_json::to_value(super::project_dtos(&st, tx_root.to_str().unwrap(), &Default::default())).unwrap();
+        let names: Vec<&str> = v.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["lp-proj"], "격리 트리는 프로젝트로 안 나온다: {v}");
+        let sessions = v[0]["sessions"].as_array().unwrap();
+        let mut ids: Vec<&str> = sessions.iter().map(|s| s["session_id"].as_str().unwrap()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["s-iso", "s-main"]);
+        let iso = sessions.iter().find(|s| s["session_id"] == "s-iso").unwrap();
+        assert_eq!(iso["worktree"]["path"], wt_path.as_str());
+        assert_eq!(iso["worktree"]["branch"], "claude/phone-abc123");
+        assert!(sessions.iter().find(|s| s["session_id"] == "s-main").unwrap().get("worktree").is_none());
+    }
+
+    #[tokio::test]
+    async fn ending_session_removes_clean_tree_and_keeps_changed_one() {
+        let base = std::env::temp_dir().join("awb_iso_end"); let _ = std::fs::remove_dir_all(&base);
+        let repo = origin_repo(&base.join("repos").join("endproj"));
+        let st = iso_state(&base);
+        let store = crate::worktree::store(&st);
+        let mk = |sid: &str| {
+            let wt = crate::worktree::create("endproj", &repo).unwrap();
+            store.add(&wt).unwrap();
+            store.note_session(sid, &wt.path).unwrap();
+            wt
+        };
+        let (clean, dirty, committed, archived) = (mk("s-clean"), mk("s-dirty"), mk("s-commit"), mk("s-arch"));
+        std::fs::write(std::path::Path::new(&dirty.path).join("new.txt"), "x").unwrap();
+        sh_git(std::path::Path::new(&committed.path), &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let end = |sid: &str| { let st = st.clone(); let sid = sid.to_string(); async move { session_end_handler(State(st), Path(("endproj".into(), sid))).await.unwrap().0 } };
+        let branch_exists = |b: &str| !sh_git(std::path::Path::new(&repo), &["branch", "--list", b]).is_empty();
+
+        let v = end("s-clean").await;
+        assert_eq!(v["ended"], true, "{v}");
+        assert_eq!(v["worktree"]["removed"], true, "{v}");
+        assert_eq!(v["worktree"]["branch_deleted"], true, "{v}");
+        assert!(!std::path::Path::new(&clean.path).exists());
+        assert!(!branch_exists(&clean.branch));
+        assert!(crate::worktree::for_resume(&st, "endproj", Some("s-clean")).is_err(), "지운 트리의 세션은 이어갈 수 없다");
+
+        let v = end("s-dirty").await;
+        assert_eq!(v["worktree"]["removed"], false, "{v}");
+        assert!(v["worktree"]["reason"].as_str().unwrap().contains("커밋 안 한 변경"), "{v}");
+        assert!(std::path::Path::new(&dirty.path).join("new.txt").exists());
+
+        let v = end("s-commit").await;
+        assert_eq!(v["worktree"]["removed"], false, "{v}");
+        assert!(v["worktree"]["reason"].as_str().unwrap().contains("새 커밋 1개"), "{v}");
+        assert!(branch_exists(&committed.branch));
+
+        let body: SessionMetaBody = serde_json::from_value(serde_json::json!({ "archived": true })).unwrap();
+        let v = session_meta_handler(State(st.clone()), Path(("endproj".into(), "s-arch".into())), Json(body)).await.unwrap().0;
+        assert_eq!(v["archived"], true);
+        assert_eq!(v["worktree"]["removed"], true, "보관도 변경 없는 트리를 지운다: {v}");
+        assert!(!std::path::Path::new(&archived.path).exists());
+
+        // 격리 세션이 아닌 끝난 세션은 예전처럼 404
+        assert!(matches!(session_end_handler(State(st.clone()), Path(("endproj".into(), "s-none".into()))).await, Err(StatusCode::NOT_FOUND)));
     }
 }

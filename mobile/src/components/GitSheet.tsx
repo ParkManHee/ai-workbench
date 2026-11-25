@@ -11,9 +11,11 @@ function toast(msg: string) {
 }
 
 // 커밋 → 푸시 → PR 을 데몬이 직접 한다. 커밋 대상은 작업트리 전체(add -A) — 무엇이 들어가는지는 diff 영역에서 먼저 본다.
-export function GitSheet({ pc, project, visible, onClose, onCommitted }: {
+export function GitSheet({ pc, project, session, visible, onClose, onCommitted }: {
   pc: PC;
   project: string;
+  /** 지금 대화 — 격리 세션이면 데몬이 그 트리에서 커밋·푸시·PR 한다 */
+  session?: string;
   visible: boolean;
   onClose: () => void;
   onCommitted: () => void;
@@ -33,11 +35,11 @@ export function GitSheet({ pc, project, visible, onClose, onCommitted }: {
     setBranch("");
     setMessage("");
     setBusy("초안 만드는 중…");
-    makeClient(pc.baseUrl, pc.token).gitDraft(project)
+    makeClient(pc.baseUrl, pc.token).gitDraft(project, session)
       .then((d) => { setMessage(d.message); setOnDefault(d.on_default); })
       .catch(() => {}) // 초안 실패 → 빈 칸에서 시작
       .finally(() => setBusy(null));
-  }, [visible, pc, project]);
+  }, [visible, pc, project, session]);
 
   async function run(label: string, f: () => Promise<{ output: string }>, next: number) {
     setBusy(label);
@@ -66,10 +68,10 @@ export function GitSheet({ pc, project, visible, onClose, onCommitted }: {
       ) : (
         <View style={styles.row}>
           <Button title="커밋" icon="check" style={styles.btn} disabled={step !== 0}
-            onPress={() => run("커밋", () => c.gitCommit(project, message, branch.trim() || undefined), 1).then((ok) => { if (ok) onCommitted(); })} />
-          <Button title="푸시" icon="upload" style={styles.btn} disabled={step !== 1} onPress={() => run("푸시", () => c.gitPush(project), 2)} />
+            onPress={() => run("커밋", () => c.gitCommit(project, message, branch.trim() || undefined, session), 1).then((ok) => { if (ok) onCommitted(); })} />
+          <Button title="푸시" icon="upload" style={styles.btn} disabled={step !== 1} onPress={() => run("푸시", () => c.gitPush(project, session), 2)} />
           <Button title="PR" icon="call-merge" style={styles.btn} disabled={step !== 2}
-            onPress={() => run("PR", () => c.gitPr(project, message.split("\n")[0]), 3).then((ok) => { if (ok) onClose(); })} />
+            onPress={() => run("PR", () => c.gitPr(project, message.split("\n")[0], undefined, session), 3).then((ok) => { if (ok) onClose(); })} />
         </View>
       )}
     </SheetFrame>

@@ -88,6 +88,7 @@ async fn stream_loop(
             for line in lines {
                 if let Some(sid) = crate::sessions::parse_session_id(&line) {
                     st.sessions.record(&meta.project, &sid, meta.fork_of.as_deref());
+                    crate::worktree::note(&st, &meta, &sid);
                     session_id = Some(sid);
                 }
                 if let Some(ev) = crate::streamevt::parse_line(&line) {

@@ -322,10 +322,6 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
 }
 
 /// 앱에 보이는 세션 — 종료된 터미널 세션은 숨긴다(열린 터미널 세션과 앱이 이어 쓰는 대화만). 숨길 세션은 파싱하지 않는다.
-pub fn list_open_sessions(slug: &str) -> Vec<SessionInfo> {
-    list_open_sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids())
-}
-
 /// live id 를 밖에서 받는다 — 여러 프로젝트를 한 번에 볼 때(/projects) 레지스트리·ps 스캔을 한 번만 하려고.
 pub fn list_open_sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>) -> Vec<SessionInfo> {
     sessions_in(dir, live_ids, true)
