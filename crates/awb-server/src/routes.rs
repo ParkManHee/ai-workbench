@@ -83,6 +83,31 @@ fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashS
     }).collect()
 }
 
+/// 답 필요 목록 — 이 PC 의 모든 프로젝트에서 권한 요청과 질문으로 끝난(답 대기) 세션을 한 번에.
+/// 앱이 PC 마다 한 번 부르고 합친다.
+pub async fn needs_you_handler(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let v = tokio::task::spawn_blocking(move || {
+        needs_you(&st, &awb_core::transcript::projects_root(), &awb_core::live::live_interactive_ids())
+    }).await.unwrap_or_default();
+    Json(v)
+}
+
+fn needs_you(st: &AppState, tx_root: &str, live_ids: &std::collections::HashSet<String>) -> serde_json::Value {
+    let permissions: Vec<serde_json::Value> = st.perms.pending_all().into_iter()
+        .map(|(id, project, tool, summary)| serde_json::json!({ "id": id, "project": project, "tool_name": tool, "summary": summary }))
+        .collect();
+    let waiting: Vec<serde_json::Value> = project_dtos(st, tx_root, live_ids).into_iter().flat_map(|p| {
+        let (project, path) = (p.name, p.path);
+        p.sessions.into_iter().filter(|s| s.info.waiting).map(move |s| {
+            let mut v = serde_json::to_value(&s).unwrap_or_default();
+            v["project"] = project.clone().into();
+            v["path"] = path.clone().into();
+            v
+        })
+    }).collect();
+    serde_json::json!({ "permissions": permissions, "waiting": waiting })
+}
+
 #[derive(serde::Deserialize)]
 pub struct DiffQuery { pub path: String, #[serde(default)] pub file: Option<String>, #[serde(default)] pub scope: Option<String>, #[serde(default)] pub run: Option<String> }
 
@@ -611,6 +636,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/status/{run_id}", get(status_handler))
         .route("/runs/active/{project}", get(active_run_handler))
         .route("/permission/pending/{project}", get(permission_pending_handler))
+        .route("/needs-you", get(needs_you_handler))
         .route("/devices", get(devices_handler))
         .route("/devservers", get(devservers_handler))
         .route("/devices/{id}/revoke", post(device_revoke_handler))
@@ -920,6 +946,38 @@ mod tests {
         assert_eq!(ids("pg-has"), vec!["s-app", "s-live"], "열린 터미널·앱 대화만, 종료된 터미널 세션은 빠진다");
         assert_eq!(ids("pg-none"), Vec::<String>::new());
         assert_eq!(ids("pg-archived"), Vec::<String>::new(), "보관된 세션은 0개로 친다");
+    }
+
+    #[test]
+    fn needs_you_lists_permissions_and_question_sessions_only() {
+        // 질문으로 끝난 앱 대화 · 완료 보고로 끝난 앱 대화 · 대기 중인 권한 요청 하나
+        let base = std::env::temp_dir().join("awb_needs_you"); let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repos").join("ny-proj"); std::fs::create_dir_all(&repo).unwrap();
+        std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "init"]).output().unwrap();
+        std::process::Command::new("git").args(["-C", repo.to_str().unwrap(), "remote", "add", "origin", "x"]).output().unwrap();
+        let real = std::fs::canonicalize(&repo).unwrap();
+        let tx_root = base.join("tx");
+        let dir = tx_root.join(awb_core::transcript::project_slug(real.to_str().unwrap())); std::fs::create_dir_all(&dir).unwrap();
+        let convo = |answer: &str| format!(concat!(
+            "{{\"type\":\"user\",\"entrypoint\":\"sdk-cli\",\"message\":{{\"role\":\"user\",\"content\":\"해줘\"}}}}\n",
+            "{{\"type\":\"assistant\",\"entrypoint\":\"sdk-cli\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{a}\"}}]}}}}\n"), a = answer);
+        // 90초 「작업 중」 창을 지나 턴이 끝난 상태로 — mtime 을 10분 전으로
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        for (sid, answer) in [("s-ask", "A안과 B안 중 어느 쪽으로 할까요?"), ("s-done", "완료했습니다.")] {
+            let f = dir.join(format!("{sid}.jsonl")); std::fs::write(&f, convo(answer)).unwrap();
+            std::fs::File::options().write(true).open(&f).unwrap().set_modified(old).unwrap();
+        }
+        let devices_path = tmp("awb_routes_devices_needs_you.json"); let _ = std::fs::remove_file(&devices_path);
+        let state = test_state(base.join("repos").to_str().unwrap(), &devices_path);
+        state.perms.insert("perm-1", crate::perm::PendingPerm { project: "ny-proj".into(), tool_name: "Write".into(), input_summary: "{}".into(), session_id: None, tx: None });
+        let v = super::needs_you(&state, tx_root.to_str().unwrap(), &Default::default());
+        assert_eq!(v["permissions"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v["permissions"][0]["project"], "ny-proj");
+        assert_eq!(v["permissions"][0]["id"], "perm-1");
+        let waiting: Vec<&str> = v["waiting"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap()).collect();
+        assert_eq!(waiting, vec!["s-ask"], "완료 보고로 끝난 세션은 답 필요가 아니다: {v}");
+        assert_eq!(v["waiting"][0]["project"], "ny-proj");
+        assert_eq!(v["waiting"][0]["path"], real.to_str().unwrap());
     }
 
     #[tokio::test]

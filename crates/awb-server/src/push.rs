@@ -46,8 +46,7 @@ pub fn should_push(reg: &crate::runreg::RunRegistry, run_id: &str) -> bool {
 /// 아니면 완료/실패 verdict로 — 사용자가 알림만 보고 "답하러 가야 하는지"를 구분할 수 있게.
 pub fn push_content(project: &str, verdict: &str, last: Option<&awb_core::transcript::TranscriptMsg>) -> (String, String) {
     if let Some(m) = last {
-        let is_question = m.role == "assistant" && (!m.options.is_empty() || m.text.trim_end().ends_with('?'));
-        if is_question {
+        if awb_core::transcript::is_question(m) {
             return (format!("🔴 질문 대기 — {project}"), awb_core::transcript::snippet(&m.text));
         }
     }

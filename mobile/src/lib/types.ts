@@ -26,3 +26,8 @@ export interface RateLimit { status: string; resets_at: number | null; rate_limi
 export interface ResumeReservation { session_id: string; resets_at: number; mode?: string; model?: string | null; effort?: string | null }
 /** 요일·시각 반복 실행 예약(프로젝트당 여러 개). days: 0=일…6=토, time: Mac 로컬 "HH:MM", next_at: 다음 회차 epoch초 */
 export interface Schedule { id: string; project: string; days: number[]; time: string; prompt: string; mode: string; model?: string | null; effort?: string | null; next_at: number }
+/** 데몬 `/needs-you` — 이 PC 의 모든 프로젝트에서 권한 요청과 질문으로 끝난(답 대기) 세션 */
+export interface NeedsYou {
+  permissions: { id: string; project: string; tool_name: string; summary: string }[];
+  waiting: (SessionInfo & { project: string; path: string })[];
+}

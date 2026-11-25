@@ -1,4 +1,4 @@
-import type { Project, Preflight, RateLimit, ResumeReservation, Schedule, SessionInfo, TranscriptMsg } from "./types";
+import type { NeedsYou, Project, Preflight, RateLimit, ResumeReservation, Schedule, SessionInfo, TranscriptMsg } from "./types";
 
 /** HTTP error carrying the response status so callers can act on 401 (revoked token). */
 export class HttpError extends Error {
@@ -54,6 +54,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
       jget(`/runs/active/${encodeURIComponent(project)}`),
     permissionPending: (project: string): Promise<{ pending: { id: string; tool_name: string; summary: string }[] }> =>
       jget(`/permission/pending/${encodeURIComponent(project)}`),
+    needsYou: (): Promise<NeedsYou> => jget("/needs-you"),
     devices: (): Promise<{ id: string; label: string; paired_at: number }[]> => jget("/devices"),
     devServers: (): Promise<{ port: number; process: string; reachable: boolean }[]> => jget("/devservers"),
     revokeDevice: async (id: string) => {

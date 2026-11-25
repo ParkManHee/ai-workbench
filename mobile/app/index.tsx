@@ -9,6 +9,7 @@ import { presenceLabel } from "../src/lib/pcs-util";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
 import { EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../src/components/ChoiceSheet";
+import { fetchNeeds, needsCount, NEEDS_POLL_MS } from "../src/lib/needs";
 
 function hostOf(baseUrl: string): string {
   return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
@@ -47,6 +48,13 @@ export default function Index() {
   const [onlineById, setOnlineById] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
+  // 모든 PC 의 권한 요청 + 답 대기 세션 수(undefined = 아직 모름)
+  const [needs, setNeeds] = useState<number | undefined>(undefined);
+
+  const refreshNeeds = useCallback(async () => {
+    const list = await loadPCs();
+    setNeeds(needsCount(await fetchNeeds(list)));
+  }, []);
 
   const refresh = useCallback(async () => {
     const list = await loadPCs();
@@ -100,12 +108,15 @@ export default function Index() {
   useFocusEffect(
     useCallback(() => {
       refresh();
-    }, [refresh])
+      refreshNeeds();
+      const iv = setInterval(refreshNeeds, NEEDS_POLL_MS);
+      return () => clearInterval(iv);
+    }, [refresh, refreshNeeds])
   );
 
   async function handleRefresh() {
     setRefreshing(true);
-    await refresh();
+    await Promise.all([refresh(), refreshNeeds()]);
     setRefreshing(false);
   }
 
@@ -136,14 +147,28 @@ export default function Index() {
       <Stack.Screen
         options={{
           headerRight: () => (
-            <Pressable
-              style={({ pressed }) => [styles.headerAction, pressed ? { opacity: 0.7 } : null]}
-              onPress={() => router.push("/pair")}
-              accessibilityRole="button"
-            >
-              <Icon name="add" size={20} color={t.accent} />
-              <Text style={styles.headerActionText}>PC 추가</Text>
-            </Pressable>
+            <View style={styles.headerActions}>
+              {/* 0 이어도 숨기지 않고 흐리게 — 응답 없는 PC 는 수에서 빠지므로 목록에서 그걸 확인할 수 있어야 하고, 숨기면 헤더가 들썩인다 */}
+              <Pressable
+                style={({ pressed }) => [styles.headerAction, !needs ? { opacity: 0.5 } : pressed ? { opacity: 0.7 } : null]}
+                onPress={() => router.push("/needs")}
+                accessibilityRole="button"
+                accessibilityLabel={needs === undefined ? "답 필요 목록" : `답 필요 ${needs}건`}
+              >
+                <Icon name="notifications" size={20} color={needs ? t.warning : t.subtext} />
+                <Text style={[styles.headerActionText, { color: needs ? t.warning : t.subtext }]}>
+                  {needs === undefined ? "답 필요" : `답 필요 ${needs}`}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.headerAction, pressed ? { opacity: 0.7 } : null]}
+                onPress={() => router.push("/pair")}
+                accessibilityRole="button"
+              >
+                <Icon name="add" size={20} color={t.accent} />
+                <Text style={styles.headerActionText}>PC 추가</Text>
+              </Pressable>
+            </View>
           ),
         }}
       />
@@ -197,6 +222,10 @@ export default function Index() {
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   headerAction: {
     flexDirection: "row",
