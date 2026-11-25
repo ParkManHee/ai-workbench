@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,14 +11,14 @@ import {
   ToastAndroid,
   View,
 } from "react-native";
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HttpError, isUnauthorized, makeClient } from "../../src/lib/api";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
-import { Button, EmptyState, Icon, ListRow, SheetFrame, StatusBadge } from "../../src/components/ui";
+import { Button, EmptyState, Icon, keepWords, ListRow, SheetFrame, StatusBadge } from "../../src/components/ui";
 import { formatUpdated, isActiveSession as isActive } from "../../src/lib/sessions";
 
 
@@ -66,7 +66,7 @@ export default function Sessions() {
           router.replace("/");
           return;
         }
-        setError("Failed to load sessions. Please try again.");
+        setError("세션을 불러오지 못했습니다. 다시 시도해 주세요.");
       } finally {
         if (isRefresh) setRefreshing(false);
         else setLoading(false);
@@ -96,6 +96,17 @@ export default function Sessions() {
       cancelled = true;
     };
   }, [pcId, load]);
+
+  // 대화에서 돌아오면 재조회(다른 목록 화면과 같게) — 첫 로드는 위 효과가 하므로 두 번째 포커스부터, 스피너는 당김새로고침 것만
+  const reloadRef = useRef(() => {});
+  reloadRef.current = () => { if (pc) load(pc, true); };
+  const focusedRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (focusedRef.current) reloadRef.current();
+      focusedRef.current = true;
+    }, [])
+  );
 
   function handleRetry() {
     if (pc) load(pc, false);
@@ -239,7 +250,7 @@ export default function Sessions() {
         <EmptyState
           icon="error-outline"
           title={error}
-          action={<Button title="Retry" icon="refresh" variant="secondary" onPress={handleRetry} />}
+          action={<Button title="다시 시도" icon="refresh" variant="secondary" onPress={handleRetry} />}
         />
       ) : (
         <FlatList
@@ -249,7 +260,7 @@ export default function Sessions() {
           keyboardShouldPersistTaps="handled"
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
           ListEmptyComponent={
-            <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "No sessions found."} />
+            <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "세션이 없습니다."} />
           }
           renderItem={({ item }) => (
             <ListRow
@@ -269,7 +280,7 @@ export default function Sessions() {
               {item.live ? (
                 <View style={styles.liveRow}>
                   <Icon name="terminal" size={14} color={t.accent} />
-                  <Text style={styles.liveText}>PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다</Text>
+                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords("PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
                 </View>
               ) : null}
               {item.answer_preview ? (

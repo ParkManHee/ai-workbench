@@ -28,7 +28,7 @@ import { rewriteBangCommand } from "../../src/lib/bang";
 import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
-import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
+import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
 import { Button, Chip, Icon, IconButton } from "../../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
@@ -77,17 +77,17 @@ export default function Chat() {
     () => ({
       body: { color: t.text, fontSize: 15, lineHeight: 22 },
       paragraph: { marginTop: 0, marginBottom: 6 },
-      heading1: { color: t.text, fontSize: 19, fontWeight: "700" as const, marginVertical: 4 },
-      heading2: { color: t.text, fontSize: 17, fontWeight: "700" as const, marginVertical: 4 },
+      heading1: { color: t.text, fontSize: 19, fontWeight: "700" as const, marginVertical: space.xs },
+      heading2: { color: t.text, fontSize: 17, fontWeight: "700" as const, marginVertical: space.xs },
       heading3: { color: t.text, fontSize: 15, fontWeight: "700" as const, marginVertical: 3 },
       strong: { fontWeight: "700" as const },
       link: { color: t.accent },
       bullet_list_icon: { color: t.text },
       ordered_list_icon: { color: t.text },
       code_inline: { backgroundColor: t.code, color: t.text, fontFamily: "monospace", borderRadius: 4 },
-      fence: { backgroundColor: t.code, borderColor: t.border, color: t.text, borderRadius: radius.sm, padding: 8, marginVertical: 4 },
+      fence: { backgroundColor: t.code, borderColor: t.border, color: t.text, borderRadius: radius.sm, padding: space.sm, marginVertical: space.xs },
       code_block: { backgroundColor: t.code, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: 11 },
-      blockquote: { backgroundColor: t.surfaceAlt, borderLeftColor: t.border, marginVertical: 4 },
+      blockquote: { backgroundColor: t.surfaceAlt, borderLeftColor: t.border, marginVertical: space.xs },
       hr: { backgroundColor: t.border },
       table: { borderColor: t.border },
       th: { color: t.text, borderColor: t.border },
@@ -393,7 +393,7 @@ export default function Chat() {
   }
 
   function pickEffort() {
-    setSheet({ title: "Effort", message: `현재: ${effort || "기본"}`, choices: [
+    setSheet({ title: "추론 강도", message: `현재: ${effort || "기본"}`, choices: [
       { label: "기본(설정 따름)", onPress: () => setEffort("") },
       ...["low", "medium", "high", "xhigh", "max"].map((e) => ({ label: e, onPress: () => setEffort(e) })),
     ] });
@@ -895,7 +895,7 @@ export default function Chat() {
           if (grew) scrollRef.current?.scrollToEnd({ animated: true });
         }}
       >
-        {loadingOlder ? <ActivityIndicator style={{ marginVertical: 8 }} color={t.accent} /> : null}
+        {loadingOlder ? <ActivityIndicator style={{ marginVertical: space.sm }} color={t.accent} /> : null}
         {chat.messages.map((m, i) => {
           const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
           const hasText = m.text.trim().length > 0;
@@ -942,6 +942,13 @@ export default function Chat() {
             </Pressable>
           );
         })}
+
+        {chat.running ? (
+          <View style={styles.runningRow} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color={t.accent} />
+            <Text style={styles.runningText}>실행 중…</Text>
+          </View>
+        ) : null}
 
         {!chat.running && chat.verdict ? (
           <View style={styles.verdictRow}>
@@ -1086,11 +1093,11 @@ export default function Chat() {
                   accessibilityLabel="첨부 빼기"
                   onPress={() => setImages((prev) => prev.filter((_, j) => j !== i))}
                 >
-                  <Icon name="close" size={14} color="#ffffff" />
+                  <Icon name="close" size={14} color={media.fg} />
                 </Pressable>
               </View>
             ))}
-            {uploading ? <ActivityIndicator style={{ marginLeft: 4 }} color={t.accent} /> : null}
+            {uploading ? <ActivityIndicator style={{ marginLeft: space.xs }} color={t.accent} /> : null}
           </View>
         ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
@@ -1100,8 +1107,10 @@ export default function Chat() {
           {controlsOpen ? (
           <>
           <View style={styles.planRow}>
-            <Text style={styles.planLabel}>plan</Text>
+            <Text style={styles.planLabel}>계획</Text>
             <Switch
+              style={styles.planSwitch}
+              accessibilityLabel="계획"
               value={plan}
               onValueChange={setPlan}
               disabled={running}
@@ -1111,7 +1120,7 @@ export default function Chat() {
           </View>
           {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
           <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
-          <Chip label={effort || "effort"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
+          <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
           <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
             <Text style={styles.chipText}>
               권한 <Text style={{ color: t.accent, fontWeight: font.weight.bold }}>{MODE_LABELS[mode]}</Text>
@@ -1173,7 +1182,7 @@ export default function Chat() {
 }
 
 // 값은 서버 PERMISSION_MODES(claude --permission-mode)와 같아야 한다
-const MODE_LABELS: Record<string, string> = { default: "감독", acceptEdits: "편집 자동", auto: "Auto", bypassPermissions: "전체" };
+const MODE_LABELS: Record<string, string> = { default: "감독", acceptEdits: "편집 자동", auto: "자동", bypassPermissions: "전체" };
 
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
@@ -1253,6 +1262,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   userBubble: {
     alignSelf: "flex-end",
     backgroundColor: t.bubbleUser,
+    minWidth: TOUCH,
     borderRadius: radius.lg,
     borderBottomRightRadius: space.xs,
     paddingHorizontal: space.md,
@@ -1262,6 +1272,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   assistantBubble: {
     alignSelf: "flex-start",
     backgroundColor: t.bubbleBot,
+    minWidth: TOUCH,
     borderRadius: radius.lg,
     borderBottomLeftRadius: space.xs,
     paddingHorizontal: space.md,
@@ -1303,6 +1314,16 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.sm,
     paddingVertical: space.xs,
     marginBottom: space.xs,
+  },
+  runningRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    paddingVertical: space.sm,
+  },
+  runningText: {
+    fontSize: font.size.sm,
+    color: t.subtext,
   },
   verdictRow: {
     alignItems: "center",
@@ -1429,7 +1450,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.sm,
   },
   permReason: {
-    minHeight: 44,
+    minHeight: TOUCH,
     paddingHorizontal: space.md,
     borderRadius: radius.md,
     backgroundColor: t.bg,
@@ -1477,8 +1498,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    // 사진 위에 얹히므로 테마와 무관하게 어두운 바탕·흰 아이콘
-    backgroundColor: "rgba(0,0,0,0.65)",
+    backgroundColor: media.scrim,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1504,6 +1524,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     height: TOUCH,
     paddingLeft: space.xs,
   },
+  // 스위치 기본 크기(약 46×27)는 누르는 곳 48 에 모자란다
+  planSwitch: {
+    height: TOUCH,
+    minWidth: TOUCH,
+  },
   planLabel: {
     fontSize: font.size.sm,
     color: t.text,
@@ -1522,9 +1547,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     minHeight: TOUCH,
     maxHeight: 120,
     paddingHorizontal: space.lg,
-    paddingTop: 12,
-    paddingBottom: 12,
-    borderRadius: 24,
+    paddingTop: space.md,
+    paddingBottom: space.md,
+    borderRadius: TOUCH / 2,
     backgroundColor: t.surface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: t.border,

@@ -72,9 +72,9 @@ function badgeText(project: Project): string | null {
 
 function preflightText(preflight: Preflight | null): string {
   if (!preflight) return "";
-  if (preflight.claude_path) return "Claude ready";
+  if (preflight.claude_path) return "Claude 준비됨";
   const failing = preflight.checks.find((c) => !c.ok);
-  return failing ? `Not ready: ${failing.detail}` : "Claude path not resolved";
+  return failing ? `준비 안 됨: ${failing.detail}` : "Claude 경로를 찾지 못했습니다";
 }
 
 export default function Projects() {
@@ -111,7 +111,7 @@ export default function Projects() {
         router.replace("/");
         return;
       }
-      setError("Failed to load projects. Please try again.");
+      setError("프로젝트를 불러오지 못했습니다. 다시 시도해 주세요.");
     } finally {
       if (isRefresh) setRefreshing(false);
       else setLoading(false);
@@ -263,7 +263,7 @@ export default function Projects() {
         <EmptyState
           icon="error-outline"
           title={error}
-          action={<Button title="Retry" icon="refresh" variant="secondary" onPress={handleRetry} />}
+          action={<Button title="다시 시도" icon="refresh" variant="secondary" onPress={handleRetry} />}
         />
       ) : (
         <FlatList
@@ -271,7 +271,7 @@ export default function Projects() {
           keyExtractor={itemKey}
           contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
-          ListEmptyComponent={<EmptyState icon="folder-open" title="No projects found." />}
+          ListEmptyComponent={<EmptyState icon="folder-open" title="프로젝트가 없습니다." />}
           renderItem={renderItem}
         />
       )}

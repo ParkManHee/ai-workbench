@@ -57,7 +57,7 @@ export function GitSheet({ pc, project, visible, onClose, onCommitted }: {
   const c = makeClient(pc.baseUrl, pc.token);
   return (
     <SheetFrame visible={visible} title="커밋 · 푸시 · PR" variant="dialog" onClose={onClose}>
-      <TextInput style={[styles.input, styles.message]} value={message} onChangeText={setMessage} placeholder="커밋 메시지" placeholderTextColor={t.placeholder} multiline editable={step === 0} />
+      <TextInput style={[styles.input, styles.message]} textBreakStrategy="balanced" value={message} onChangeText={setMessage} placeholder="커밋 메시지" placeholderTextColor={t.placeholder} multiline editable={step === 0} />
       {onDefault && step === 0 ? (
         <TextInput style={[styles.input, styles.branch]} value={branch} onChangeText={setBranch} placeholder="새 브랜치 이름 (기본 브랜치에는 바로 커밋 안 함)" placeholderTextColor={t.placeholder} autoCapitalize="none" autoCorrect={false} />
       ) : null}

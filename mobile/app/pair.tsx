@@ -6,7 +6,7 @@ import { parsePairPayload } from "../src/lib/pairing";
 import { makeClient, pairUrl } from "../src/lib/api";
 import { pcId } from "../src/lib/pcs-util";
 import { addPC } from "../src/store/pcs";
-import { font, radius, space, useTheme, type Theme } from "../src/lib/theme";
+import { font, media, radius, space, useTheme, type Theme } from "../src/lib/theme";
 import { Button, Icon } from "../src/components/ui";
 
 export default function Pair() {
@@ -24,7 +24,7 @@ export default function Pair() {
 
     const parsed = parsePairPayload(data);
     if (!parsed) {
-      setError("Invalid QR code");
+      setError("페어링용 QR 코드가 아닙니다.");
       setScanned(false);
       return;
     }
@@ -47,7 +47,7 @@ export default function Pair() {
       await addPC({ id: pcId(baseUrl), label, baseUrl, token });
       router.replace("/");
     } catch {
-      setError("Pairing failed. Please try again.");
+      setError("페어링하지 못했습니다. 다시 시도해 주세요.");
       setScanned(false);
     } finally {
       setPairing(false);
@@ -62,8 +62,8 @@ export default function Pair() {
     return (
       <View style={[styles.container, styles.permission]}>
         <Icon name="photo-camera" size={40} color={t.subtext} />
-        <Text style={styles.text}>Camera permission is required to scan the pairing QR code.</Text>
-        <Button title="Grant permission" onPress={requestPermission} />
+        <Text style={styles.text}>페어링 QR 코드를 스캔하려면 카메라 권한이 필요합니다.</Text>
+        <Button title="권한 허용" onPress={requestPermission} />
       </View>
     );
   }
@@ -80,11 +80,11 @@ export default function Pair() {
       <View style={styles.frame} pointerEvents="none" />
       {pairing ? (
         <View style={styles.overlay}>
-          <ActivityIndicator color="#ffffff" />
+          <ActivityIndicator color={media.fg} />
         </View>
       ) : error ? (
         <View style={styles.overlay}>
-          <Icon name="error-outline" size={20} color="#ffffff" />
+          <Icon name="error-outline" size={20} color={media.fg} />
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
@@ -113,7 +113,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     height: 240,
     borderRadius: radius.lg,
     borderWidth: 3,
-    borderColor: "rgba(255,255,255,0.9)",
+    borderColor: media.frame,
   },
   overlay: {
     position: "absolute",
@@ -124,12 +124,12 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: space.sm,
-    backgroundColor: "rgba(0,0,0,0.7)",
+    backgroundColor: media.scrim,
     borderRadius: radius.md,
     padding: space.md,
   },
   errorText: {
-    color: "#ffffff",
+    color: media.fg,
     fontSize: font.size.sm,
   },
 });

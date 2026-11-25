@@ -12,6 +12,6 @@ export function progressAction(p: Record<string, unknown>): ProgressAction | nul
   if (p.kind !== "progress" || typeof p.step !== "string") return null;
   const todo = p.todo as { done?: unknown; total?: unknown } | null | undefined;
   const suffix =
-    typeof todo?.done === "number" && typeof todo?.total === "number" ? ` (todo ${todo.done}/${todo.total})` : "";
+    typeof todo?.done === "number" && typeof todo?.total === "number" ? ` (할 일 ${todo.done}/${todo.total})` : "";
   return { kind: "show", identifier, title: `⏳ ${p.project} · ${p.step}${suffix}` };
 }

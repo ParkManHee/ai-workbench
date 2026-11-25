@@ -40,12 +40,12 @@ export const lightTheme: Theme = {
   border: "#dfe2e7",
   text: "#14171c",
   subtext: "#5c636e",
-  placeholder: "#737a84",
+  placeholder: "#686f79",
   accent: "#2563eb",
   onAccent: "#ffffff",
   accentSoft: "#ebf1ff",
   success: "#1e8e3e",
-  warning: "#b25e00",
+  warning: "#a35600",
   danger: "#d0312d",
   onDanger: "#ffffff",
   bubbleUser: "#dfe9ff",
@@ -62,7 +62,7 @@ export const darkTheme: Theme = {
   border: "#30353e",
   text: "#e8eaed",
   subtext: "#9aa1ab",
-  placeholder: "#7a818b",
+  placeholder: "#868d97",
   // 다크에선 밝은 파랑 + 어두운 글자 — 흰 글자를 올리면 대비가 3:1 아래로 떨어진다
   accent: "#8ab4f8",
   onAccent: "#0b1a33",
@@ -76,6 +76,9 @@ export const darkTheme: Theme = {
   code: "#22262d",
   scrim: "rgba(0,0,0,0.6)",
 };
+
+/** 카메라 영상·사진 위에 얹는 요소 — 영상 밝기가 제각각이라 테마와 무관하게 어두운 바탕·흰 글자 */
+export const media = { scrim: "rgba(0,0,0,0.7)", fg: "#ffffff", frame: "rgba(255,255,255,0.9)" } as const;
 
 export function useTheme(): Theme {
   return useColorScheme() === "dark" ? darkTheme : lightTheme;

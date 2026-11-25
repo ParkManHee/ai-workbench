@@ -17,7 +17,16 @@ export type IconName = ComponentProps<typeof MaterialIcons>["name"];
 
 export function Icon({ name, size = 20, color }: { name: IconName; size?: number; color?: string }) {
   const t = useTheme();
-  return <MaterialIcons name={name} size={size} color={color ?? t.text} />;
+  // 장식 — 글리프(사설 영역 문자)가 감싼 버튼의 읽기 문구에 섞이지 않게 접근성 트리에서 뺀다. 의미는 버튼 라벨이 갖는다
+  return <MaterialIcons name={name} size={size} color={color ?? t.text} accessible={false} importantForAccessibility="no" />;
+}
+
+/**
+ * 한글은 음절마다 줄이 바뀔 수 있어 끝 글자 하나가 다음 줄로 떨어진다(「…이어집니 / 다」).
+ * 어절 안 음절 사이에 WORD JOINER(U+2060)를 넣어 띄어쓰기에서만 줄을 바꾸게 한다 — 고정 문구용(입력값엔 쓰지 않는다)
+ */
+export function keepWords(s: string): string {
+  return s.split(" ").map((w) => [...w].join("\u2060")).join(" ");
 }
 
 const PRESSED = 0.7;
@@ -170,11 +179,13 @@ export type Status = "working" | "waiting";
 export function StatusBadge({ status, label }: { status: Status; label?: string }) {
   const t = useTheme();
   const color = status === "working" ? t.success : t.warning;
+  const word = status === "working" ? "작업 중" : "답 필요";
   return (
     <View style={[styles.badge, { backgroundColor: t.surfaceAlt }]}>
       <View style={[styles.dot, { backgroundColor: color }]} />
       <Text style={[styles.badgeText, { color: t.text }]} numberOfLines={1}>
-        {label ?? (status === "working" ? "작업 중" : "답 필요")}
+        {/* 이름을 단 배지도 상태를 글자로 — 점 색만으로 구분하지 않는다 */}
+        {label ? `${label} · ${word}` : word}
       </Text>
     </View>
   );
