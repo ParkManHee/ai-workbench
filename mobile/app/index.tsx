@@ -1,23 +1,21 @@
 import { useCallback, useState, useMemo } from "react";
-import { Alert, Button, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
-import { router, useFocusEffect } from "expo-router";
+import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { router, Stack, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EXPECTED_API_VERSION, makeClient } from "../src/lib/api";
 import type { PC, Project } from "../src/lib/types";
 import { loadPCs, removePC, touchPCs } from "../src/store/pcs";
 import { presenceLabel } from "../src/lib/pcs-util";
-import { useTheme, type Theme } from "../src/lib/theme";
+import { font, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
+import { EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
 
 function hostOf(baseUrl: string): string {
   return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
 }
 
-/** PC 한 대의 활동 요약 한 줄: "🟢 proj1 · 🔴 proj2" (상태 있는 프로젝트만). */
-function statusLine(projects: Project[]): string {
-  const parts = projects
-    .filter((p) => p.agent_status)
-    .map((p) => `${p.agent_status === "working" ? "🟢" : "🔴"} ${p.name}`);
-  return parts.join(" · ");
+/** PC 한 대의 활동 요약 — 상태 있는 프로젝트만. 배지로 그리려고 문자열 대신 목록으로 둔다 */
+function activeProjects(projects: Project[]): Project[] {
+  return projects.filter((p) => p.agent_status);
 }
 
 /** /health 는 인증 필요 라우트라 토큰을 싣는다. 401 이어도 응답이 왔으면 PC 는 켜져 있다. */
@@ -40,8 +38,8 @@ export default function Index() {
   const insets = useSafeAreaInsets();
   // undefined = not checked yet, null = checked and empty (redirecting)
   const [pcs, setPcs] = useState<PC[] | null | undefined>(undefined);
-  // PC별 활동 요약(대시보드): pcId → 요약 문자열("" = 활동 없음, undefined = 조회 전/실패)
-  const [statusById, setStatusById] = useState<Record<string, string>>({});
+  // PC별 활동 요약(대시보드): pcId → 상태 있는 프로젝트([] = 활동 없음, undefined = 조회 전/실패)
+  const [statusById, setStatusById] = useState<Record<string, Project[]>>({});
   // PC별 버전 불일치 경고(api_version ≠ 앱 기대값)
   const [versionWarnById, setVersionWarnById] = useState<Record<string, string>>({});
   // PC별 온라인 여부(undefined = 확인 전)
@@ -73,7 +71,7 @@ export default function Index() {
       try {
         const client = makeClient(pc.baseUrl, pc.token);
         const [projects, info] = await Promise.all([client.projects() as Promise<Project[]>, client.info()]);
-        setStatusById((prev) => ({ ...prev, [pc.id]: statusLine(projects) }));
+        setStatusById((prev) => ({ ...prev, [pc.id]: activeProjects(projects) }));
         setVersionWarnById((prev) => {
           const next = { ...prev };
           if (info.api_version !== undefined && info.api_version !== EXPECTED_API_VERSION) {
@@ -137,38 +135,61 @@ export default function Index() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Button title="+ PC 추가" onPress={() => router.push("/pair")} />
-      </View>
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <Pressable
+              style={({ pressed }) => [styles.headerAction, pressed ? { opacity: 0.7 } : null]}
+              onPress={() => router.push("/pair")}
+              accessibilityRole="button"
+            >
+              <Icon name="add" size={20} color={t.accent} />
+              <Text style={styles.headerActionText}>PC 추가</Text>
+            </Pressable>
+          ),
+        }}
+      />
       <FlatList
         data={pcs}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 12, flexGrow: 1 }}
-        ListEmptyComponent={
-          <View style={styles.center}>
-            <Text>등록된 PC가 없습니다.</Text>
-          </View>
-        }
-        renderItem={({ item }) => (
-          <Pressable
-            style={styles.row}
-            onPress={() => handlePress(item)}
-            onLongPress={() => handleLongPress(item)}
-          >
-            <Text style={styles.label}>{item.label}</Text>
-            <Text style={styles.host}>{hostOf(item.baseUrl)}</Text>
-            <Text style={styles.statusIdle}>{presenceLabel(onlineById[item.id], item.lastSeen, Date.now())}</Text>
-            {statusById[item.id] ? (
-              <Text style={styles.statusLine}>{statusById[item.id]}</Text>
-            ) : statusById[item.id] === "" ? (
-              <Text style={styles.statusIdle}>활동 중인 프로젝트 없음</Text>
-            ) : null}
-            {versionWarnById[item.id] ? (
-              <Text style={styles.versionWarn}>{versionWarnById[item.id]}</Text>
-            ) : null}
-          </Pressable>
-        )}
+        contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
+        ListEmptyComponent={<EmptyState icon="computer" title="등록된 PC가 없습니다." />}
+        renderItem={({ item }) => {
+          const online = onlineById[item.id];
+          const active = statusById[item.id];
+          return (
+            <ListRow
+              title={item.label}
+              subtitle={hostOf(item.baseUrl)}
+              onPress={() => handlePress(item)}
+              onLongPress={() => handleLongPress(item)}
+              right={<Icon name="chevron-right" size={24} color={t.subtext} />}
+            >
+              <View style={styles.presence}>
+                <View style={[styles.dot, { backgroundColor: online === undefined ? t.border : online ? t.success : t.subtext }]} />
+                <Text style={styles.presenceText}>
+                  {presenceLabel(online, item.lastSeen, Date.now()).replace(/^(🟢|⚫) /, "")}
+                </Text>
+              </View>
+              {active && active.length > 0 ? (
+                <View style={styles.badges}>
+                  {active.map((p) => (
+                    <StatusBadge key={p.name} status={p.agent_status!} label={p.name} />
+                  ))}
+                </View>
+              ) : active ? (
+                <Text style={styles.meta}>활동 중인 프로젝트 없음</Text>
+              ) : null}
+              {versionWarnById[item.id] ? (
+                <View style={styles.presence}>
+                  <Icon name="warning-amber" size={16} color={t.warning} />
+                  <Text style={styles.versionWarn}>{versionWarnById[item.id].replace(/^⚠️ /, "")}</Text>
+                </View>
+              ) : null}
+            </ListRow>
+          );
+        }}
       />
     </View>
   );
@@ -178,45 +199,46 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
-  header: {
-    padding: 12,
-    alignItems: "flex-start",
-  },
-  center: {
-    flex: 1,
+  headerAction: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    gap: 12,
+    gap: space.xs,
+    height: TOUCH,
+    paddingHorizontal: space.sm,
   },
-  row: {
-    padding: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
+  headerActionText: {
+    color: t.accent,
+    fontSize: font.size.sm,
+    fontWeight: font.weight.bold,
   },
-  label: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: t.text,
+  presence: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: space.xs,
   },
-  host: {
-    fontSize: 12,
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  presenceText: {
+    fontSize: font.size.xs,
     color: t.subtext,
-    marginTop: 2,
   },
-  statusLine: {
-    fontSize: 13,
-    marginTop: 6,
-    color: t.text,
-  },
-  statusIdle: {
-    fontSize: 12,
+  meta: {
+    fontSize: font.size.xs,
     color: t.subtext,
-    marginTop: 6,
+    marginTop: space.xs,
+  },
+  badges: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: space.sm,
   },
   versionWarn: {
-    fontSize: 12,
-    color: "#e67e22",
-    marginTop: 4,
+    fontSize: font.size.xs,
+    color: t.warning,
   },
 });

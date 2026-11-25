@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { useColorScheme } from "react-native";
 import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -9,6 +8,7 @@ import { makeClient } from "../src/lib/api";
 import { PROGRESS_CHANNEL } from "../src/lib/progress";
 import type { PC } from "../src/lib/types";
 import { loadPCs } from "../src/store/pcs";
+import { font, useTheme } from "../src/lib/theme";
 
 // 앱이 포그라운드일 때도 알림을 표시(기본은 억제됨)
 Notifications.setNotificationHandler({
@@ -99,7 +99,7 @@ export default function RootLayout() {
     return () => sub.remove();
   }, []);
 
-  const dark = useColorScheme() === "dark";
+  const t = useTheme();
   return (
     <SafeAreaProvider>
       {/* 상태바 아이콘: 시스템 테마에 맞춰 자동(라이트→어두운 아이콘, 다크→밝은 아이콘) */}
@@ -107,9 +107,11 @@ export default function RootLayout() {
       <KeyboardProvider>
         <Stack
           screenOptions={{
-            headerStyle: { backgroundColor: dark ? "#1c1c1e" : "#ffffff" },
-            headerTintColor: dark ? "#e8e8e8" : "#111111",
-            contentStyle: { backgroundColor: dark ? "#121212" : "#ffffff" },
+            headerStyle: { backgroundColor: t.bg },
+            headerTintColor: t.text,
+            headerTitleStyle: { fontSize: font.size.lg, fontWeight: font.weight.bold },
+            headerShadowVisible: false,
+            contentStyle: { backgroundColor: t.bg },
           }}
         >
           <Stack.Screen name="index" options={{ title: "PC" }} />

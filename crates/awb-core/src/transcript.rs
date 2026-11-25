@@ -11,7 +11,7 @@ pub fn safe_session_id(s: &str) -> bool {
 }
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 fn home() -> String { std::env::var("HOME").unwrap_or_default() }
-fn projects_root() -> String { format!("{}/.claude/projects", home()) }
+pub fn projects_root() -> String { format!("{}/.claude/projects", home()) }
 /// 세션 트랜스크립트 파일 경로 — 데몬 라우트·데스크톱 앱 공용.
 pub fn transcript_path(slug: &str, session_id: &str) -> String {
     format!("{}/{}/{}.jsonl", projects_root(), slug, session_id)
@@ -312,15 +312,30 @@ fn last_entrypoint(path: &str) -> Option<String> {
 }
 
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
-    let dir = format!("{}/{}", projects_root(), slug);
+    sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids(), false)
+}
+
+/// 앱에 보이는 세션 — 종료된 터미널 세션은 숨긴다(열린 터미널 세션과 앱이 이어 쓰는 대화만). 숨길 세션은 파싱하지 않는다.
+pub fn list_open_sessions(slug: &str) -> Vec<SessionInfo> {
+    list_open_sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids())
+}
+
+/// live id 를 밖에서 받는다 — 여러 프로젝트를 한 번에 볼 때(/projects) 레지스트리·ps 스캔을 한 번만 하려고.
+pub fn list_open_sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>) -> Vec<SessionInfo> {
+    sessions_in(dir, live_ids, true)
+}
+
+fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, open_only: bool) -> Vec<SessionInfo> {
     let mut out = vec![];
-    let entries = match fs::read_dir(&dir) { Ok(e) => e, Err(_) => return out };
-    let live_ids = crate::live::live_interactive_ids();
+    let entries = match fs::read_dir(dir) { Ok(e) => e, Err(_) => return out };
     for e in entries.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("jsonl") { continue; }
         let sid = p.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
         if !safe_session_id(&sid) { continue; }
+        let live = live_ids.contains(&sid);
+        let app = last_entrypoint(p.to_str().unwrap_or("")).as_deref() == Some("sdk-cli");
+        if open_only && !(live || app) { continue; }
         let updated = e.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
         let (msgs, _n, active) = read_transcript(p.to_str().unwrap_or(""), 0);
@@ -331,8 +346,6 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
             .map(|m| snippet(&m.text)).unwrap_or_default();
         let age = now().saturating_sub(updated);
         let waiting = !active && status_from(age, msgs.last().map(|m| m.role.as_str())) == Some("waiting");
-        let live = live_ids.contains(&sid);
-        let app = last_entrypoint(p.to_str().unwrap_or("")).as_deref() == Some("sdk-cli");
         out.push(SessionInfo { session_id: sid, updated, preview, answer_preview, count: msgs.len() as u32, active, waiting, live, app });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));

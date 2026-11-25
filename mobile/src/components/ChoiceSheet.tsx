@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useTheme, type Theme } from "../lib/theme";
+import { Pressable, ScrollView, StyleSheet, Text } from "react-native";
+import { font, space, useTheme, type Theme } from "../lib/theme";
+import { Button, SheetFrame } from "./ui";
 
 export interface Choice { label: string; onPress: () => void }
 export interface ChoiceSheetState { title: string; message?: string; choices: Choice[] }
@@ -11,48 +12,37 @@ export function ChoiceSheet({ state, onClose }: { state: ChoiceSheetState | null
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   return (
-    <Modal visible={!!state} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => {}}>
-          <View style={styles.header}>
-            <Text style={styles.title}>{state?.title}</Text>
-            <Pressable onPress={onClose} hitSlop={12}>
-              <Text style={styles.close}>✕</Text>
-            </Pressable>
-          </View>
-          {state?.message ? <Text style={styles.message}>{state.message}</Text> : null}
-          <ScrollView style={{ maxHeight: 360 }}>
-            {state?.choices.map((c) => (
-              <Pressable
-                key={c.label}
-                style={styles.choice}
-                onPress={() => {
-                  onClose();
-                  c.onPress();
-                }}
-              >
-                <Text style={styles.choiceText}>{c.label}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          <Pressable style={styles.cancel} onPress={onClose}>
-            <Text style={styles.cancelText}>취소</Text>
+    <SheetFrame visible={!!state} title={state?.title} onClose={onClose}>
+      {state?.message ? <Text style={styles.message}>{state.message}</Text> : null}
+      <ScrollView style={{ maxHeight: 360 }}>
+        {state?.choices.map((c) => (
+          <Pressable
+            key={c.label}
+            style={({ pressed }) => [styles.choice, pressed ? { backgroundColor: t.surfaceAlt } : null]}
+            accessibilityRole="button"
+            onPress={() => {
+              onClose();
+              c.onPress();
+            }}
+          >
+            <Text style={styles.choiceText}>{c.label}</Text>
           </Pressable>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        ))}
+      </ScrollView>
+      <Button title="취소" variant="secondary" onPress={onClose} style={styles.cancel} />
+    </SheetFrame>
   );
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", padding: 24 },
-  sheet: { backgroundColor: t.box, borderRadius: 12, padding: 16, gap: 8 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  title: { fontSize: 17, fontWeight: "700", color: t.text },
-  close: { fontSize: 20, color: t.subtext },
-  message: { color: t.subtext },
-  choice: { paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.border },
-  choiceText: { fontSize: 16, color: t.text },
-  cancel: { paddingVertical: 12, alignItems: "center" },
-  cancelText: { fontSize: 16, color: t.accent, fontWeight: "600" },
+  message: { fontSize: font.size.sm, color: t.subtext },
+  choice: {
+    minHeight: 52,
+    justifyContent: "center",
+    paddingHorizontal: space.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+  },
+  choiceText: { fontSize: font.size.md, color: t.text },
+  cancel: { marginTop: space.sm },
 });

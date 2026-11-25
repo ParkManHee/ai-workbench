@@ -28,7 +28,8 @@ import { rewriteBangCommand } from "../../src/lib/bang";
 import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
-import { useTheme, type Theme } from "../../src/lib/theme";
+import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
+import { Button, Chip, Icon, IconButton } from "../../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
 import { GitSheet } from "../../src/components/GitSheet";
@@ -74,7 +75,7 @@ export default function Chat() {
   // 어시스턴트 말풍선의 마크다운 렌더 스타일(테마 연동) — **, ``` 등이 원문으로 노출되지 않게 한다
   const mdStyles = useMemo(
     () => ({
-      body: { color: t.text, fontSize: 15 },
+      body: { color: t.text, fontSize: 15, lineHeight: 22 },
       paragraph: { marginTop: 0, marginBottom: 6 },
       heading1: { color: t.text, fontSize: 19, fontWeight: "700" as const, marginVertical: 4 },
       heading2: { color: t.text, fontSize: 17, fontWeight: "700" as const, marginVertical: 4 },
@@ -83,10 +84,10 @@ export default function Chat() {
       link: { color: t.accent },
       bullet_list_icon: { color: t.text },
       ordered_list_icon: { color: t.text },
-      code_inline: { backgroundColor: t.mono, color: t.text, fontFamily: "monospace", borderRadius: 4 },
-      fence: { backgroundColor: t.mono, borderColor: t.border, borderRadius: 6, padding: 8, marginVertical: 4 },
-      code_block: { backgroundColor: t.mono, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: 11 },
-      blockquote: { backgroundColor: t.box, borderLeftColor: t.border, marginVertical: 4 },
+      code_inline: { backgroundColor: t.code, color: t.text, fontFamily: "monospace", borderRadius: 4 },
+      fence: { backgroundColor: t.code, borderColor: t.border, color: t.text, borderRadius: radius.sm, padding: 8, marginVertical: 4 },
+      code_block: { backgroundColor: t.code, borderColor: t.border, color: t.text, fontFamily: "monospace", fontSize: 11 },
+      blockquote: { backgroundColor: t.surfaceAlt, borderLeftColor: t.border, marginVertical: 4 },
       hr: { backgroundColor: t.border },
       table: { borderColor: t.border },
       th: { color: t.text, borderColor: t.border },
@@ -814,10 +815,14 @@ export default function Chat() {
         const doneN = todos.filter((x) => x.startsWith("✔")).length;
         const cur = todos.find((x) => x.startsWith("▶"));
         return (
-          <Pressable style={styles.todoBar} onPress={() => setTodoOpen((v) => !v)}>
-            <Text style={styles.todoTitle}>
-              ☑ 진행 {doneN}/{todos.length}{cur ? ` · ${cur.slice(2)}` : ""} {todoOpen ? "▲" : "▼"}
-            </Text>
+          <Pressable style={styles.todoBar} onPress={() => setTodoOpen((v) => !v)} accessibilityRole="button">
+            <View style={styles.barRow}>
+              <Icon name="checklist" size={18} color={t.accent} />
+              <Text style={styles.todoTitle} numberOfLines={1}>
+                진행 {doneN}/{todos.length}{cur ? ` · ${cur.slice(2)}` : ""}
+              </Text>
+              <Icon name={todoOpen ? "expand-less" : "expand-more"} size={20} color={t.subtext} />
+            </View>
             {todoOpen ? todos.map((x, i) => (
               <Text key={i} style={styles.todoItem}>{x}</Text>
             )) : null}
@@ -830,21 +835,21 @@ export default function Chat() {
         const limited = rl && rl.status !== "allowed" ? rl : null;
         const canReserve = !reservation && !running && limited?.status === "rejected" && limited.project === project;
         if (!limited && !reservation) return null;
+        const limitColor = limited?.status === "rejected" ? t.danger : t.warning;
         return (
           <View style={styles.limitBar}>
             {limited ? (
-              <Text style={[styles.limitText, { color: limited.status === "rejected" ? "#d93025" : "#e8a33d" }]}>
-                {limited.status === "rejected" ? "⛔ 사용량 한도 도달" : "⚠ 사용량 한도 임박"} · 리셋 {hhmm(limited.resets_at!)}
-              </Text>
+              <View style={styles.barRow}>
+                <Icon name={limited.status === "rejected" ? "block" : "warning-amber"} size={16} color={limitColor} />
+                <Text style={[styles.limitText, { color: limitColor }]}>
+                  {limited.status === "rejected" ? "사용량 한도 도달" : "사용량 한도 임박"} · 리셋 {hhmm(limited.resets_at!)}
+                </Text>
+              </View>
             ) : null}
             {reservation ? (
-              <Pressable style={styles.presetChip} onPress={cancelResume}>
-                <Text style={styles.presetChipText}>예약됨 {hhmm(reservation.resets_at + 60)} · 취소</Text>
-              </Pressable>
+              <Chip icon="schedule" label={`예약됨 ${hhmm(reservation.resets_at + 60)} · 취소`} onPress={cancelResume} />
             ) : canReserve ? (
-              <Pressable style={styles.presetChip} onPress={() => reserveResume(limited!)}>
-                <Text style={styles.presetChipText}>리셋 때 이어가기</Text>
-              </Pressable>
+              <Chip icon="schedule" label="리셋 때 이어가기" onPress={() => reserveResume(limited!)} />
             ) : null}
           </View>
         );
@@ -889,28 +894,32 @@ export default function Chat() {
           if (grew) scrollRef.current?.scrollToEnd({ animated: true });
         }}
       >
-        {loadingOlder ? <ActivityIndicator style={{ marginVertical: 8 }} /> : null}
+        {loadingOlder ? <ActivityIndicator style={{ marginVertical: 8 }} color={t.accent} /> : null}
         {chat.messages.map((m, i) => {
           const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
           const hasText = m.text.trim().length > 0;
           const isOpen = expandedTools.has(i);
           const details = m.toolDetails && m.toolDetails.length > 0 ? m.toolDetails : m.tools ?? [];
+          const toolToggle = hasTools ? (
+            <Pressable style={styles.toolButton} onPress={() => toggleTools(i)} hitSlop={10} accessibilityRole="button">
+              <Icon name="build" size={14} color={t.subtext} />
+              <Text style={styles.toolButtonText}>작업 {m.tools!.length}</Text>
+              <Icon name={isOpen ? "expand-less" : "expand-more"} size={16} color={t.subtext} />
+            </Pressable>
+          ) : null;
+          const toolList = hasTools && isOpen
+            ? details.map((d, di) => (
+                <Text key={di} style={styles.toolDetail} selectable>
+                  {d}
+                </Text>
+              ))
+            : null;
           // 툴만 있는 항목(답변 텍스트 없음): 말풍선 대신 작은 접힘 버튼만
           if (m.role === "assistant" && hasTools && !hasText) {
             return (
               <View key={i} style={styles.toolOnlyRow}>
-                <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
-                  <Text style={styles.toolButtonText}>
-                    🔧 작업 {m.tools!.length} {isOpen ? "▲" : "▼"}
-                  </Text>
-                </Pressable>
-                {isOpen
-                  ? details.map((d, di) => (
-                      <Text key={di} style={styles.toolDetail} selectable>
-                        {d}
-                      </Text>
-                    ))
-                  : null}
+                {toolToggle}
+                {toolList}
               </View>
             );
           }
@@ -920,20 +929,8 @@ export default function Chat() {
               style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
               onLongPress={hasText ? () => bubbleActions(m.role, m.text) : undefined}
             >
-              {hasTools ? (
-                <Pressable style={styles.toolButton} onPress={() => toggleTools(i)}>
-                  <Text style={styles.toolButtonText}>
-                    🔧 작업 {m.tools!.length} {isOpen ? "▲" : "▼"}
-                  </Text>
-                </Pressable>
-              ) : null}
-              {hasTools && isOpen
-                ? details.map((d, di) => (
-                    <Text key={di} style={styles.toolDetail} selectable>
-                      {d}
-                    </Text>
-                  ))
-                : null}
+              {toolToggle}
+              {toolList}
               {hasText ? (
                 m.role === "user" ? (
                   <Text style={styles.userText}>{m.text}</Text>
@@ -947,36 +944,48 @@ export default function Chat() {
 
         {!chat.running && chat.verdict ? (
           <View style={styles.verdictRow}>
-            <Text style={styles.verdictText}>{verdictLabel(chat.verdict)}</Text>
+            <View style={styles.barRow}>
+              <Icon
+                name={chat.verdict === "failed" ? "error" : "check-circle"}
+                size={18}
+                color={chat.verdict === "failed" ? t.danger : t.success}
+              />
+              <Text style={styles.verdictText}>{verdictLabel(chat.verdict).replace(/^(✅|❌|⏳) /, "")}</Text>
+            </View>
             <Text style={styles.changedFiles}>{changedFilesLabel(chat.changedFiles, diff)}</Text>
           </View>
         ) : null}
 
-        {chat.error ? <Text style={styles.errorText}>⚠️ {chat.error}</Text> : null}
+        {chat.error ? (
+          <View style={styles.errorRow}>
+            <Icon name="error-outline" size={16} color={t.danger} />
+            <Text style={styles.errorText}>{chat.error}</Text>
+          </View>
+        ) : null}
 
         {diff ? (
           <View style={styles.diffBox}>
-            <Pressable onPress={() => setDiffOpen((v) => !v)}>
+            <Pressable style={styles.diffHeader} onPress={() => setDiffOpen((v) => !v)} accessibilityRole="button">
+              <Icon name="difference" size={18} color={t.subtext} />
               <Text style={styles.diffTitle}>
-                git 변경 · {diff.run ? "이번 턴" : "전체"}: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions} {diffOpen ? "▼" : "▶"}
+                git 변경 · {diff.run ? "이번 턴" : "전체"}: 파일 {diff.files}개 · +{diff.insertions} / -{diff.deletions}
               </Text>
+              <Icon name={diffOpen ? "expand-less" : "expand-more"} size={20} color={t.subtext} />
             </Pressable>
             {diffOpen && lastRunRef.current && !chat.running ? (
-              <View style={styles.optionRow}>
+              <View style={styles.chipRow}>
                 {(["turn", "all"] as const).map((sc) => (
-                  <Pressable key={sc} style={(diff.run ? "turn" : "all") === sc ? styles.optionChip : styles.presetChip}
-                    onPress={() => { diffScopeRef.current = sc; if (pc) fetchDiff(pc); }}>
-                    <Text style={(diff.run ? "turn" : "all") === sc ? styles.optionChipText : styles.presetChipText}>{sc === "turn" ? "이번 턴" : "전체"}</Text>
-                  </Pressable>
+                  <Chip key={sc} label={sc === "turn" ? "이번 턴" : "전체"} selected={(diff.run ? "turn" : "all") === sc}
+                    onPress={() => { diffScopeRef.current = sc; if (pc) fetchDiff(pc); }} />
                 ))}
               </View>
             ) : null}
             {diffOpen ? diff.entries.map((e, i) => (
               <View key={i}>
-                <Pressable onPress={() => toggleFileDiff(e.path)}>
-                  <Text style={styles.diffEntry}>
-                    {openDiffs[e.path] !== undefined ? "▼" : "▶"} {e.status} {e.path}
-                  </Text>
+                <Pressable style={styles.diffEntryRow} onPress={() => toggleFileDiff(e.path)} accessibilityRole="button">
+                  <Icon name={openDiffs[e.path] !== undefined ? "expand-more" : "chevron-right"} size={18} color={t.subtext} />
+                  <Text style={styles.diffStatus}>{e.status}</Text>
+                  <Text style={styles.diffEntry} numberOfLines={2}>{e.path}</Text>
                 </Pressable>
                 {openDiffs[e.path] !== undefined ? (
                   <Text style={styles.diffText} selectable>
@@ -992,8 +1001,10 @@ export default function Chat() {
         <Pressable
           style={[styles.jumpDownButton, kbPad > 0 ? { bottom: 14 + kbPad } : null]}
           onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          accessibilityRole="button"
+          accessibilityLabel="맨 아래로"
         >
-          <Text style={styles.jumpDownText}>⬇</Text>
+          <Icon name="arrow-downward" size={22} color={t.text} />
         </Pressable>
       ) : null}
       </View>
@@ -1002,18 +1013,15 @@ export default function Chat() {
         {/* 승인 모드 실행의 권한 요청 — 허용/거부 */}
         {perms.map((pm) => (
           <View key={pm.id} style={styles.permCard}>
-            <Text style={styles.permTitle}>🔐 권한 요청: {pm.tool_name}</Text>
+            <View style={styles.barRow}>
+              <Icon name="lock" size={18} color={t.warning} />
+              <Text style={styles.permTitle}>권한 요청: {pm.tool_name}</Text>
+            </View>
             <Text style={styles.permBody} numberOfLines={3}>{pm.summary}</Text>
             <View style={styles.permButtons}>
-              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true)}>
-                <Text style={styles.buttonText}>이번만</Text>
-              </Pressable>
-              <Pressable style={styles.permAllow} onPress={() => answerPermission(pm.id, true, true)}>
-                <Text style={styles.buttonText}>세션 동안</Text>
-              </Pressable>
-              <Pressable style={styles.permDeny} onPress={() => answerPermission(pm.id, false)}>
-                <Text style={styles.buttonText}>거절</Text>
-              </Pressable>
+              <Button title="이번만" style={styles.permButton} onPress={() => answerPermission(pm.id, true)} />
+              <Button title="세션 동안" variant="secondary" style={styles.permButton} onPress={() => answerPermission(pm.id, true, true)} />
+              <Button title="거절" variant="danger" style={styles.permButton} onPress={() => answerPermission(pm.id, false)} />
             </View>
             <TextInput
               style={styles.permReason}
@@ -1026,21 +1034,15 @@ export default function Chat() {
         ))}
         {/* 실행 종료 + 변경 있음 → 커밋·푸시·PR 시트 */}
         {!chat.running && diff && diff.files > 0 ? (
-          <View style={styles.optionRow}>
-            <Pressable style={styles.optionChip} onPress={() => setGitOpen(true)}>
-              <Text style={styles.optionChipText}>📦 커밋·푸시·PR</Text>
-            </Pressable>
+          <View style={styles.chipBar}>
+            <Chip icon="commit" label="커밋·푸시·PR" selected onPress={() => setGitOpen(true)} />
           </View>
         ) : null}
         {/* plan 완료 → 원탭 실행 승인 */}
         {showPlanApprove && !chat.running ? (
-          <View style={styles.optionRow}>
-            <Pressable style={styles.optionChip} onPress={() => handleSend("좋아, 방금 세운 계획대로 진행해줘.", false)}>
-              <Text style={styles.optionChipText}>▶ 이 계획대로 진행</Text>
-            </Pressable>
-            <Pressable style={styles.presetChip} onPress={() => setShowPlanApprove(false)}>
-              <Text style={styles.presetChipText}>닫기</Text>
-            </Pressable>
+          <View style={styles.chipBar}>
+            <Chip icon="play-arrow" label="이 계획대로 진행" selected onPress={() => handleSend("좋아, 방금 세운 계획대로 진행해줘.", false)} />
+            <Chip label="닫기" onPress={() => setShowPlanApprove(false)} />
           </View>
         ) : null}
         {/* 마지막 메시지가 선택지 질문(AskUserQuestion)이면 탭 한 번으로 답하는 버튼 */}
@@ -1049,27 +1051,28 @@ export default function Chat() {
           const opts = !chat.running && last?.role === "assistant" ? last.options ?? [] : [];
           if (opts.length === 0) return null;
           return (
-            <View style={styles.optionRow}>
+            <View style={styles.chipBar}>
               {opts.map((o, i) => (
-                <Pressable key={i} style={styles.optionChip} onPress={() => handleSend(o)}>
-                  <Text style={styles.optionChipText}>{o}</Text>
-                </Pressable>
+                <Chip key={i} label={o} selected onPress={() => handleSend(o)} />
               ))}
             </View>
           );
         })()}
         {/* 프리셋: 입력이 비어 있을 때만 — 탭하면 입력창에 채워져 수정 후 전송 */}
         {controlsOpen && inputFocused && !prompt && !chat.running && images.length === 0 ? (
-          <View style={styles.optionRow}>
+          <View style={styles.chipBar}>
             {PROMPT_PRESETS.map((p, i) => (
-              <Pressable key={i} style={styles.presetChip} onPress={() => setPrompt(p)}>
-                <Text style={styles.presetChipText}>{p}</Text>
-              </Pressable>
+              <Chip key={i} label={p} onPress={() => setPrompt(p)} />
             ))}
           </View>
         ) : null}
         {/* 에러는 키보드 위(입력바와 함께)로 — 리스트 아래에 두면 키보드에 가려 안 보인다 */}
-        {sendError ? <Text style={styles.errorText}>{sendError}</Text> : null}
+        {sendError ? (
+          <View style={[styles.errorRow, styles.sendError]}>
+            <Icon name="error-outline" size={16} color={t.danger} />
+            <Text style={styles.errorText}>{sendError}</Text>
+          </View>
+        ) : null}
         {images.length > 0 ? (
           <View style={styles.attachRow}>
             {images.map((im, i) => (
@@ -1077,13 +1080,16 @@ export default function Chat() {
                 <Image source={{ uri: im.uri }} style={styles.thumb} />
                 <Pressable
                   style={styles.thumbRemove}
+                  hitSlop={14}
+                  accessibilityRole="button"
+                  accessibilityLabel="첨부 빼기"
                   onPress={() => setImages((prev) => prev.filter((_, j) => j !== i))}
                 >
-                  <Text style={styles.thumbRemoveText}>✕</Text>
+                  <Icon name="close" size={14} color="#ffffff" />
                 </Pressable>
               </View>
             ))}
-            {uploading ? <ActivityIndicator style={{ marginLeft: 4 }} /> : null}
+            {uploading ? <ActivityIndicator style={{ marginLeft: 4 }} color={t.accent} /> : null}
           </View>
         ) : null}
         <View style={[styles.inputBar, { paddingBottom: kbVisible ? 8 : insets.bottom + 8 }]}>
@@ -1093,69 +1099,68 @@ export default function Chat() {
           {controlsOpen ? (
           <>
           <View style={styles.planRow}>
-          <Text style={styles.planLabel}>plan</Text>
-          <Switch
-            value={plan}
-            onValueChange={setPlan}
-            disabled={running}
-            style={{ transform: [{ scale: 0.85 }] }}
-          />
-        </View>
+            <Text style={styles.planLabel}>plan</Text>
+            <Switch
+              value={plan}
+              onValueChange={setPlan}
+              disabled={running}
+              trackColor={{ false: t.surfaceAlt, true: t.accent }}
+              thumbColor={plan ? t.onAccent : t.subtext}
+            />
+          </View>
           {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
-          <Pressable style={styles.presetChip} onPress={pickModel}>
-            <Text style={[styles.presetChipText, model ? { color: t.accent, fontWeight: "700" } : null]}>
-              {model || "모델"}
+          <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
+          <Chip label={effort || "effort"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
+          <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
+            <Text style={styles.chipText}>
+              권한 <Text style={{ color: t.accent, fontWeight: font.weight.bold }}>{MODE_LABELS[mode]}</Text>
             </Text>
-          </Pressable>
-          <Pressable style={styles.presetChip} onPress={pickEffort}>
-            <Text style={[styles.presetChipText, effort ? { color: t.accent, fontWeight: "700" } : null]}>
-              {effort || "effort"}
-            </Text>
-          </Pressable>
-          <Pressable style={[styles.presetChip, running ? { opacity: 0.5 } : null]} onPress={pickMode} disabled={running}>
-            <Text style={styles.presetChipText}>
-              권한 <Text style={{ color: t.accent, fontWeight: "700" }}>{MODE_LABELS[mode]}</Text>
-            </Text>
-          </Pressable>
-        <Pressable style={styles.attachButton} onPress={pickImages} disabled={uploading || images.length >= 3}>
-          <Text style={styles.attachButtonText}>🖼</Text>
-        </Pressable>
-        <Pressable style={styles.attachButton} onPress={openDevServerPreview}>
-          <Text style={styles.attachButtonText}>🌐</Text>
-        </Pressable>
-        <Pressable style={styles.attachButton} onPress={toggleMic}>
-          <Text style={styles.attachButtonText}>{listening ? "🔴" : "🎤"}</Text>
-        </Pressable>
+          </Chip>
+          <View style={styles.iconRow}>
+            <IconButton name="image" label="이미지 첨부" onPress={pickImages} disabled={uploading || images.length >= 3} />
+            <IconButton name="public" label="dev 서버 프리뷰" onPress={openDevServerPreview} />
+            <IconButton name={listening ? "mic-off" : "mic"} label={listening ? "받아쓰기 멈춤" : "받아쓰기"} color={listening ? t.danger : undefined} onPress={toggleMic} />
+          </View>
           </>
           ) : null}
-        {/* 취소는 컨트롤 줄에 — 입력 줄에 끼우면 전송 버튼이 밀려 그 자리에 취소가 와 오터치된다 */}
-        {running ? (
-          <Pressable style={styles.cancelButton} onPress={handleCancel}>
-            <Text style={styles.cancelButtonText}>취소</Text>
-          </Pressable>
-        ) : null}
+          {/* 취소는 컨트롤 줄에 — 입력 줄에 끼우면 전송 버튼이 밀려 그 자리에 취소가 와 오터치된다 */}
+          {running ? (
+            <Button title="취소" icon="stop" variant="danger" size="sm" onPress={handleCancel} />
+          ) : null}
           </View>
           ) : null}
           <View style={styles.inputRow}>
-        <TextInput
-          style={styles.input}
-          multiline
-          value={prompt}
-          onChangeText={setPrompt}
-          onFocus={() => { setInputFocused(true); setControlsOpen(true); }}
-          onPressIn={() => setControlsOpen(true)}
-          onBlur={() => setInputFocused(false)}
-          editable={!uploading}
-          placeholder="메시지를 입력하세요"
-          placeholderTextColor={t.placeholder}
-        />
-        <Pressable
-          style={[styles.sendButton, sending ? { opacity: 0.5 } : null]}
-          onPress={() => handleSend()}
-          disabled={(!prompt.trim() && images.length === 0) || uploading || sending}
-        >
-          <Text style={styles.buttonText}>{uploading ? "업로드…" : sending ? "전송중…" : running ? "큐잉" : "전송"}</Text>
-        </Pressable>
+            <TextInput
+              style={styles.input}
+              multiline
+              value={prompt}
+              onChangeText={setPrompt}
+              onFocus={() => { setInputFocused(true); setControlsOpen(true); }}
+              onPressIn={() => setControlsOpen(true)}
+              onBlur={() => setInputFocused(false)}
+              editable={!uploading}
+              placeholder="메시지를 입력하세요"
+              placeholderTextColor={t.placeholder}
+            />
+            {(() => {
+              const disabled = (!prompt.trim() && images.length === 0) || uploading || sending;
+              // 실행 중엔 보내면 대기열로 간다 — 아이콘만으론 구별이 안 돼 글자를 남긴다
+              if (running && !uploading && !sending) {
+                return <Button title="큐잉" size="sm" disabled={disabled} onPress={() => handleSend()} style={styles.queueButton} />;
+              }
+              return (
+                <Pressable
+                  style={({ pressed }) => [styles.sendButton, disabled ? { opacity: 0.4 } : pressed ? { opacity: 0.7 } : null]}
+                  onPress={() => handleSend()}
+                  disabled={disabled}
+                  accessibilityRole="button"
+                  accessibilityLabel={uploading ? "업로드 중" : sending ? "전송 중" : "전송"}
+                  accessibilityState={{ disabled, busy: uploading || sending }}
+                >
+                  {uploading || sending ? <ActivityIndicator color={t.onAccent} /> : <Icon name="arrow-upward" size={24} color={t.onAccent} />}
+                </Pressable>
+              );
+            })()}
           </View>
         </View>
       </KeyboardStickyView>
@@ -1173,22 +1178,60 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
+  barRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
   resumeBar: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: t.box,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    backgroundColor: t.surface,
     gap: 2,
   },
   resumeLabel: {
-    fontSize: 11,
+    fontSize: font.size.xs,
     color: t.subtext,
   },
   resumeCmd: {
-    fontSize: 12,
+    fontSize: font.size.xs,
     fontFamily: "monospace",
     color: t.text,
+  },
+  todoBar: {
+    minHeight: TOUCH,
+    justifyContent: "center",
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    backgroundColor: t.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+  },
+  todoTitle: {
+    flex: 1,
+    fontSize: font.size.sm,
+    fontWeight: font.weight.bold,
+    color: t.text,
+  },
+  todoItem: {
+    fontSize: font.size.xs,
+    color: t.subtext,
+    marginTop: space.xs,
+    marginLeft: 26,
+  },
+  limitBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.border,
+  },
+  limitText: {
+    fontSize: font.size.xs,
+    fontWeight: font.weight.bold,
   },
   listWrap: {
     flex: 1,
@@ -1196,256 +1239,220 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   list: {
     flex: 1,
   },
-  optionRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
-    backgroundColor: t.box,
-  },
-  optionChip: {
-    backgroundColor: t.chip,
-    borderColor: t.accent,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  optionChipText: {
-    color: t.accent,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  presetChip: {
-    backgroundColor: t.chip,
-    borderColor: t.border,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    paddingHorizontal: 11,
-    paddingVertical: 5,
-  },
-  presetChipText: {
-    color: t.chipText,
-    fontSize: 12,
-  },
-  limitBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
-  },
-  limitText: {
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  todoBar: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
-    backgroundColor: t.box,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  todoTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: t.text,
-  },
-  todoItem: {
-    fontSize: 12,
-    color: t.subtext,
-    marginTop: 2,
-  },
-  permCard: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
-    backgroundColor: t.box,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 4,
-  },
-  permTitle: {
-    fontWeight: "700",
-    color: t.text,
-  },
-  permBody: {
-    fontSize: 12,
-    fontFamily: "monospace",
-    color: t.subtext,
-  },
-  permButtons: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 4,
-  },
-  permAllow: {
-    backgroundColor: "#1f9d55",
-    borderRadius: 8,
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-  },
-  permReason: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    fontSize: 12,
-    color: t.text,
-  },
-  permDeny: {
-    backgroundColor: "#c0392b",
-    borderRadius: 8,
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-  },
-  jumpDownButton: {
-    position: "absolute",
-    right: 14,
-    bottom: 14,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  jumpDownText: {
-    color: "white",
-    fontSize: 18,
-  },
   listContent: {
-    padding: 12,
-    gap: 8,
+    padding: space.lg,
+    gap: space.sm,
   },
   userBubble: {
     alignSelf: "flex-end",
     backgroundColor: t.bubbleUser,
-    borderRadius: 12,
-    padding: 10,
-    marginVertical: 4,
+    borderRadius: radius.lg,
+    borderBottomRightRadius: space.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
     maxWidth: "85%",
   },
   assistantBubble: {
     alignSelf: "flex-start",
     backgroundColor: t.bubbleBot,
-    borderRadius: 12,
-    padding: 10,
-    marginVertical: 4,
+    borderRadius: radius.lg,
+    borderBottomLeftRadius: space.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
     maxWidth: "85%",
   },
   userText: {
     fontSize: 15,
-    color: t.text,
-  },
-  assistantText: {
-    fontSize: 15,
+    lineHeight: 22,
     color: t.text,
   },
   toolOnlyRow: {
     alignSelf: "flex-start",
     maxWidth: "85%",
-    marginVertical: 2,
   },
   toolButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
     alignSelf: "flex-start",
-    backgroundColor: t.chip,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    marginBottom: 4,
+    height: 28,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    backgroundColor: t.surface,
+    marginBottom: space.xs,
   },
   toolButtonText: {
-    fontSize: 11,
-    color: t.chipText,
+    fontSize: font.size.xs,
+    color: t.subtext,
   },
   toolDetail: {
     fontSize: 11,
     color: t.subtext,
     fontFamily: "monospace",
-    backgroundColor: t.mono,
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    marginBottom: 3,
+    backgroundColor: t.code,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    marginBottom: space.xs,
   },
   verdictRow: {
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: space.sm,
     gap: 2,
   },
   verdictText: {
-    fontWeight: "600",
+    fontSize: font.size.sm,
+    fontWeight: font.weight.bold,
     color: t.text,
   },
   changedFiles: {
-    fontSize: 12,
+    fontSize: font.size.xs,
     color: t.subtext,
   },
+  errorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs,
+    paddingVertical: space.xs,
+  },
+  sendError: {
+    backgroundColor: t.bg,
+    paddingHorizontal: space.lg,
+  },
   errorText: {
-    color: "#c0392b",
-    textAlign: "center",
-    paddingVertical: 4,
+    flexShrink: 1,
+    fontSize: font.size.sm,
+    color: t.danger,
   },
   diffBox: {
-    backgroundColor: t.box,
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 4,
+    backgroundColor: t.surface,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+    marginTop: space.xs,
+  },
+  diffHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: TOUCH,
   },
   diffTitle: {
-    fontWeight: "600",
-    marginBottom: 4,
+    flex: 1,
+    fontSize: font.size.sm,
+    fontWeight: font.weight.bold,
     color: t.text,
   },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.sm,
+    paddingVertical: space.sm,
+  },
+  diffEntryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: 40,
+  },
+  diffStatus: {
+    width: 20,
+    fontSize: font.size.xs,
+    fontFamily: "monospace",
+    fontWeight: font.weight.bold,
+    color: t.subtext,
+  },
   diffEntry: {
-    fontSize: 12,
+    flex: 1,
+    fontSize: font.size.xs,
     color: t.text,
-    paddingVertical: 2,
   },
   diffText: {
     fontSize: 10,
     fontFamily: "monospace",
     color: t.text,
-    backgroundColor: t.mono,
-    borderRadius: 6,
-    padding: 6,
-    marginVertical: 2,
+    backgroundColor: t.code,
+    borderRadius: radius.sm,
+    padding: space.sm,
+    marginVertical: space.xs,
   },
-  inputBar: {
-    padding: 8,
-    gap: 6,
+  jumpDownButton: {
+    position: "absolute",
+    right: space.lg,
+    bottom: 14,
+    width: TOUCH,
+    height: TOUCH,
+    borderRadius: TOUCH / 2,
+    backgroundColor: t.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  permCard: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: t.border,
-    // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
-    backgroundColor: t.box,
+    backgroundColor: t.surface,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+    gap: space.sm,
   },
-  controlRow: {
+  permTitle: {
+    flex: 1,
+    fontSize: font.size.md,
+    fontWeight: font.weight.bold,
+    color: t.text,
+  },
+  permBody: {
+    fontSize: font.size.xs,
+    fontFamily: "monospace",
+    color: t.subtext,
+  },
+  permButtons: {
     flexDirection: "row",
-    alignItems: "center",
+    gap: space.sm,
+  },
+  permButton: {
+    flex: 1,
+    paddingHorizontal: space.sm,
+  },
+  permReason: {
+    minHeight: 44,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+    backgroundColor: t.bg,
+    fontSize: font.size.sm,
+    color: t.text,
+  },
+  // 컨트롤 위 칩 줄(답·계획 승인·커밋·프리셋) — 키보드 위에 겹쳐 뜨므로 바탕을 칠한다
+  chipBar: {
+    flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: t.border,
+    backgroundColor: t.bg,
   },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 8,
+  chipText: {
+    fontSize: font.size.sm,
+    color: t.text,
   },
   attachRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: t.border,
-    backgroundColor: t.box,
+    backgroundColor: t.bg,
   },
   thumbWrap: {
     position: "relative",
@@ -1453,8 +1460,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   thumb: {
     width: 56,
     height: 56,
-    borderRadius: 8,
-    backgroundColor: t.chip,
+    borderRadius: radius.sm,
+    backgroundColor: t.surfaceAlt,
   },
   thumbRemove: {
     position: "absolute",
@@ -1463,62 +1470,69 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
+    // 사진 위에 얹히므로 테마와 무관하게 어두운 바탕·흰 아이콘
     backgroundColor: "rgba(0,0,0,0.65)",
     alignItems: "center",
     justifyContent: "center",
   },
-  thumbRemoveText: {
-    color: "white",
-    fontSize: 11,
+  inputBar: {
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+    gap: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: t.border,
+    // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
+    backgroundColor: t.bg,
   },
-  attachButton: {
-    height: 40,
-    justifyContent: "center",
-    paddingHorizontal: 2,
-  },
-  attachButtonText: {
-    fontSize: 20,
-    color: t.text,
+  controlRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: space.sm,
   },
   planRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    height: 40,
+    gap: space.xs,
+    height: TOUCH,
+    paddingLeft: space.xs,
   },
   planLabel: {
-    fontSize: 13,
+    fontSize: font.size.sm,
     color: t.text,
+  },
+  iconRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
   },
   input: {
     flex: 1,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#ccc",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    minHeight: TOUCH,
     maxHeight: 120,
-    color: t.inputText,
+    paddingHorizontal: space.lg,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderRadius: 24,
+    backgroundColor: t.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.border,
+    fontSize: font.size.md,
+    color: t.text,
   },
   sendButton: {
-    backgroundColor: "#2f6fed",
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    width: TOUCH,
+    height: TOUCH,
+    borderRadius: TOUCH / 2,
+    backgroundColor: t.accent,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  cancelButton: {
-    backgroundColor: "#c0392b",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  cancelButtonText: {
-    color: "white",
-    fontWeight: "600",
-    fontSize: 12,
-  },
-  buttonText: {
-    color: "white",
-    fontWeight: "600",
+  queueButton: {
+    height: TOUCH,
   },
 });
