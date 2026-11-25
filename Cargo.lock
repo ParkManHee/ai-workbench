@@ -242,6 +242,7 @@ dependencies = [
  "awb-core",
  "axum",
  "image",
+ "libc",
  "qrcode",
  "rand 0.8.6",
  "serde",

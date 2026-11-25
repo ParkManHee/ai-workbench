@@ -47,11 +47,17 @@ impl TurnQueue {
 
 /// run 완료 후 호출: 큐에 다음 턴이 있으면 실행한다. 락 경합이면 5초 간격 재시도(최대 120회).
 /// 성공적으로 시작되면 그 run의 워처가 done에서 다시 drain을 이어가므로 체인이 유지된다.
-pub fn spawn_drain(st: crate::routes::AppState, project: String, workdir: String) {
+/// repo 는 원래 트리 — 큐의 턴마다 이을 세션이 격리 세션이면 그 트리에서 돈다(chat_handler 와 같은 규칙).
+pub fn spawn_drain(st: crate::routes::AppState, project: String, repo: String) {
     tokio::spawn(async move {
         for _ in 0..120 {
             let Some(t) = st.queue.pop(&project) else { return };
             let (resume, fork_of) = crate::routes::resolve_resume(&st, &project, t.resume_session_id.clone(), t.new_session);
+            let wt = match crate::worktree::for_resume(&st, &project, resume.as_deref()) {
+                Ok(w) => w,
+                Err(e) => { eprintln!("queue::spawn_drain {project}: 턴 버림 — {e}"); continue; }
+            };
+            let workdir = wt.as_ref().map_or_else(|| repo.clone(), |w| w.path.clone());
             let mcp_cfg = crate::routes::approval_mcp_cfg_for(&st, &project, &t.mode);
             match awb_core::runner::start_stream_run(
                 &st.claude_bin, &workdir, &st.settings_path, t.plan, &t.prompt, resume.as_deref(), fork_of.is_some(), &st.runs_dir, mcp_cfg.as_deref(), t.model.as_deref(), t.effort.as_deref(), &t.mode,
@@ -59,7 +65,7 @@ pub fn spawn_drain(st: crate::routes::AppState, project: String, workdir: String
                 Ok(h) => {
                     let run_id = crate::routes::run_id_of(&h.log);
                     st.runs.insert(&run_id, crate::runreg::RunMeta {
-                        log: h.log.clone(), pgid: h.pgid, workdir: workdir.clone(), project: project.clone(), notified: false, fork_of,
+                        log: h.log.clone(), pgid: h.pgid, workdir: workdir.clone(), project: project.clone(), notified: false, fork_of, worktree: wt,
                     });
                     crate::push::spawn_watch(st.clone(), run_id);
                     return;

@@ -15,7 +15,7 @@ import type { PC, Preflight, Project, SessionInfo } from "../src/lib/types";
 import { getPC, removePC } from "../src/store/pcs";
 import { font, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
 import { Button, EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
-import { formatUpdated, isActiveSession } from "../src/lib/sessions";
+import { formatUpdated, isActiveSession, sessionPathParams } from "../src/lib/sessions";
 
 /** 프로젝트 아래에 붙이는 지난 대화 수 — 활성 세션은 개수와 무관하게 전부 보인다 */
 const RECENT = 3;
@@ -48,7 +48,10 @@ function buildItems(projects: Project[], showIdle: boolean): Item[] {
       items.push({ kind: "more", project, total: project.sessions.length });
     }
   }
-  if (idle.length > 0) {
+  // 세션 있는 프로젝트가 하나도 없으면 접어 둘 이유가 없다 — 접기 줄 없이 전부 보인다
+  if (idle.length > 0 && items.length === 0) {
+    for (const project of idle) items.push({ kind: "project", project });
+  } else if (idle.length > 0) {
     items.push({ kind: "fold", count: idle.length });
     if (showIdle) for (const project of idle) items.push({ kind: "project", project });
   }
@@ -72,9 +75,9 @@ function badgeText(project: Project): string | null {
 
 function preflightText(preflight: Preflight | null): string {
   if (!preflight) return "";
-  if (preflight.claude_path) return "Claude ready";
+  if (preflight.claude_path) return "Claude 준비됨";
   const failing = preflight.checks.find((c) => !c.ok);
-  return failing ? `Not ready: ${failing.detail}` : "Claude path not resolved";
+  return failing ? `준비 안 됨: ${failing.detail}` : "Claude 경로를 찾지 못했습니다";
 }
 
 export default function Projects() {
@@ -111,7 +114,7 @@ export default function Projects() {
         router.replace("/");
         return;
       }
-      setError("Failed to load projects. Please try again.");
+      setError("프로젝트를 불러오지 못했습니다. 다시 시도해 주세요.");
     } finally {
       if (isRefresh) setRefreshing(false);
       else setLoading(false);
@@ -167,7 +170,7 @@ export default function Projects() {
   function handleSessionPress(project: Project, session: SessionInfo) {
     router.push({
       pathname: "/chat/[project]",
-      params: { pc: pcId, project: project.name, path: project.path, session: session.session_id },
+      params: { pc: pcId, project: project.name, ...sessionPathParams(session, project.path), session: session.session_id },
     });
   }
 
@@ -224,6 +227,7 @@ export default function Projects() {
       <ListRow
         title={project.name}
         subtitle={project.path}
+        subtitleEllipsize="middle"
         onPress={() => handlePress(project)}
         right={
           <View style={styles.right}>
@@ -263,7 +267,7 @@ export default function Projects() {
         <EmptyState
           icon="error-outline"
           title={error}
-          action={<Button title="Retry" icon="refresh" variant="secondary" onPress={handleRetry} />}
+          action={<Button title="다시 시도" icon="refresh" variant="secondary" onPress={handleRetry} />}
         />
       ) : (
         <FlatList
@@ -271,7 +275,7 @@ export default function Projects() {
           keyExtractor={itemKey}
           contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
-          ListEmptyComponent={<EmptyState icon="folder-open" title="No projects found." />}
+          ListEmptyComponent={<EmptyState icon="folder-open" title="프로젝트가 없습니다." />}
           renderItem={renderItem}
         />
       )}
@@ -326,7 +330,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   },
   childBody: {
     flex: 1,
-    gap: 2,
+    gap: space.xxs,
   },
   childTitle: {
     fontSize: font.size.sm,

@@ -1,13 +1,15 @@
 import { useCallback, useState, useMemo } from "react";
-import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EXPECTED_API_VERSION, makeClient } from "../src/lib/api";
 import type { PC, Project } from "../src/lib/types";
 import { loadPCs, removePC, touchPCs } from "../src/store/pcs";
 import { presenceLabel } from "../src/lib/pcs-util";
-import { font, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
+import { font, radius, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
 import { EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
+import { ChoiceSheet, type ChoiceSheetState } from "../src/components/ChoiceSheet";
+import { fetchNeeds, needsCount, NEEDS_POLL_MS } from "../src/lib/needs";
 
 function hostOf(baseUrl: string): string {
   return baseUrl.replace(/^[a-zA-Z]+:\/\//, "");
@@ -45,6 +47,14 @@ export default function Index() {
   // PC별 온라인 여부(undefined = 확인 전)
   const [onlineById, setOnlineById] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [sheet, setSheet] = useState<ChoiceSheetState | null>(null);
+  // 모든 PC 의 권한 요청 + 답 대기 세션 수(undefined = 아직 모름)
+  const [needs, setNeeds] = useState<number | undefined>(undefined);
+
+  const refreshNeeds = useCallback(async () => {
+    const list = await loadPCs();
+    setNeeds(needsCount(await fetchNeeds(list)));
+  }, []);
 
   const refresh = useCallback(async () => {
     const list = await loadPCs();
@@ -98,12 +108,15 @@ export default function Index() {
   useFocusEffect(
     useCallback(() => {
       refresh();
-    }, [refresh])
+      refreshNeeds();
+      const iv = setInterval(refreshNeeds, NEEDS_POLL_MS);
+      return () => clearInterval(iv);
+    }, [refresh, refreshNeeds])
   );
 
   async function handleRefresh() {
     setRefreshing(true);
-    await refresh();
+    await Promise.all([refresh(), refreshNeeds()]);
     setRefreshing(false);
   }
 
@@ -112,21 +125,17 @@ export default function Index() {
   }
 
   function handleLongPress(pc: PC) {
-    Alert.alert(pc.label, "무엇을 할까요?", [
-      { text: "취소", style: "cancel" },
+    setSheet({ title: pc.label, message: "무엇을 할까요?", choices: [
+      { label: "페어링 기기 관리", onPress: () => router.push({ pathname: "/devices", params: { pc: pc.id } }) },
       {
-        text: "페어링 기기 관리",
-        onPress: () => router.push({ pathname: "/devices", params: { pc: pc.id } }),
-      },
-      {
-        text: "목록에서 삭제",
-        style: "destructive",
+        label: "목록에서 삭제",
+        destructive: true,
         onPress: async () => {
           await removePC(pc.id);
           refresh();
         },
       },
-    ]);
+    ] });
   }
 
   if (!pcs) {
@@ -138,14 +147,28 @@ export default function Index() {
       <Stack.Screen
         options={{
           headerRight: () => (
-            <Pressable
-              style={({ pressed }) => [styles.headerAction, pressed ? { opacity: 0.7 } : null]}
-              onPress={() => router.push("/pair")}
-              accessibilityRole="button"
-            >
-              <Icon name="add" size={20} color={t.accent} />
-              <Text style={styles.headerActionText}>PC 추가</Text>
-            </Pressable>
+            <View style={styles.headerActions}>
+              {/* 0 이어도 숨기지 않고 흐리게 — 응답 없는 PC 는 수에서 빠지므로 목록에서 그걸 확인할 수 있어야 하고, 숨기면 헤더가 들썩인다 */}
+              <Pressable
+                style={({ pressed }) => [styles.headerAction, !needs ? { opacity: 0.5 } : pressed ? { opacity: 0.7 } : null]}
+                onPress={() => router.push("/needs")}
+                accessibilityRole="button"
+                accessibilityLabel={needs === undefined ? "답 필요 목록" : `답 필요 ${needs}건`}
+              >
+                <Icon name="notifications" size={20} color={needs ? t.warning : t.subtext} />
+                <Text style={[styles.headerActionText, { color: needs ? t.warning : t.subtext }]}>
+                  {needs === undefined ? "답 필요" : `답 필요 ${needs}`}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.headerAction, pressed ? { opacity: 0.7 } : null]}
+                onPress={() => router.push("/pair")}
+                accessibilityRole="button"
+              >
+                <Icon name="add" size={20} color={t.accent} />
+                <Text style={styles.headerActionText}>PC 추가</Text>
+              </Pressable>
+            </View>
           ),
         }}
       />
@@ -191,6 +214,7 @@ export default function Index() {
           );
         }}
       />
+      <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
     </View>
   );
 }
@@ -198,6 +222,10 @@ export default function Index() {
 const makeStyles = (t: Theme) => StyleSheet.create({
   container: {
     flex: 1,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   headerAction: {
     flexDirection: "row",
@@ -214,13 +242,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   presence: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: space.xs,
     marginTop: space.xs,
   },
   dot: {
     width: 8,
     height: 8,
-    borderRadius: 4,
+    borderRadius: radius.pill,
   },
   presenceText: {
     fontSize: font.size.xs,
@@ -234,7 +262,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   badges: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: space.sm,
     marginTop: space.sm,
   },
   versionWarn: {

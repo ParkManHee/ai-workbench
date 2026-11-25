@@ -43,6 +43,13 @@ impl PermStore {
             .collect()
     }
 
+    /// 답 필요 목록용: 모든 프로젝트의 (id, project, tool_name, input_summary).
+    pub fn pending_all(&self) -> Vec<(String, String, String, String)> {
+        self.inner.lock().unwrap().iter()
+            .map(|(id, p)| (id.clone(), p.project.clone(), p.tool_name.clone(), p.input_summary.clone()))
+            .collect()
+    }
+
     pub fn is_session_allowed(&self, session_id: &str, tool_name: &str) -> bool {
         self.session_allowed.lock().unwrap().contains(&(session_id.to_string(), tool_name.to_string()))
     }

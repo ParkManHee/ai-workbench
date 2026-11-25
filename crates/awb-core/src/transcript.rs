@@ -234,14 +234,20 @@ pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail
     Page { messages: taken.into_iter().map(|(_, _, m)| m.clone()).collect(), prev, next: total, active }
 }
 
+/// 마지막 메시지가 사용자에게 묻는 것인가 — 선택지(AskUserQuestion)가 있거나 '?' 로 끝나는 assistant 메시지.
+/// 「답 필요」 배지·목록과 질문 대기 푸시가 같은 기준을 쓴다.
+pub fn is_question(m: &TranscriptMsg) -> bool {
+    m.role == "assistant" && (!m.options.is_empty() || m.text.trim_end().ends_with('?'))
+}
+
 /// 상태 판정(순수): working = 90초 내 갱신(에이전트 활동 중),
-/// waiting = 최근 1시간 내 턴이 끝나 사용자 입력 대기(마지막 메시지가 assistant).
+/// waiting = 최근 1시간 내 턴이 질문으로 끝나 사용자 답 대기. 「완료했습니다」 로 끝난 턴은 답이 필요 없다.
 /// 1시간 지난 세션은 "대화 중"이 아니라 과거 기록으로 보고 표시하지 않는다.
 const WORKING_SECS: u64 = 90;
 const WAITING_SECS: u64 = 3600;
-fn status_from(age_secs: u64, last_role: Option<&str>) -> Option<&'static str> {
+fn status_from(age_secs: u64, last: Option<&TranscriptMsg>) -> Option<&'static str> {
     if age_secs <= WORKING_SECS { return Some("working"); }
-    if age_secs <= WAITING_SECS && last_role == Some("assistant") { return Some("waiting"); }
+    if age_secs <= WAITING_SECS && last.is_some_and(is_question) { return Some("waiting"); }
     None
 }
 
@@ -289,7 +295,7 @@ pub fn project_status_in(dir: &str) -> Option<String> {
     let age = now().saturating_sub(mtime);
     if age <= WORKING_SECS { return Some("working".to_string()); }
     let last = last_msg_from_tail(path.to_str()?)?;
-    status_from(age, Some(last.role.as_str())).map(|s| s.to_string())
+    status_from(age, Some(&last)).map(|s| s.to_string())
 }
 
 /// 리스트 미리보기용 한 줄 요약: 개행을 공백으로, 마크다운 기호 제거, 60자 절단.
@@ -316,10 +322,6 @@ pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
 }
 
 /// 앱에 보이는 세션 — 종료된 터미널 세션은 숨긴다(열린 터미널 세션과 앱이 이어 쓰는 대화만). 숨길 세션은 파싱하지 않는다.
-pub fn list_open_sessions(slug: &str) -> Vec<SessionInfo> {
-    list_open_sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids())
-}
-
 /// live id 를 밖에서 받는다 — 여러 프로젝트를 한 번에 볼 때(/projects) 레지스트리·ps 스캔을 한 번만 하려고.
 pub fn list_open_sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>) -> Vec<SessionInfo> {
     sessions_in(dir, live_ids, true)
@@ -345,7 +347,7 @@ fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, open_onl
         let answer_preview = msgs.iter().rev().find(|m| m.role == "assistant" && !m.text.trim().is_empty())
             .map(|m| snippet(&m.text)).unwrap_or_default();
         let age = now().saturating_sub(updated);
-        let waiting = !active && status_from(age, msgs.last().map(|m| m.role.as_str())) == Some("waiting");
+        let waiting = !active && status_from(age, msgs.last()) == Some("waiting");
         out.push(SessionInfo { session_id: sid, updated, preview, answer_preview, count: msgs.len() as u32, active, waiting, live, app });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
@@ -416,12 +418,17 @@ mod tests {
     }
     #[test]
     fn status_working_then_waiting_then_none() {
-        assert_eq!(status_from(0, Some("assistant")), Some("working"));
+        let m = |role: &str, text: &str| TranscriptMsg { role: role.into(), text: text.into(), tools: vec![], tool_details: vec![], options: vec![], todos: vec![] };
+        let (q, done) = (m("assistant", "어느 쪽으로 할까요?"), m("assistant", "완료했습니다."));
+        assert_eq!(status_from(0, Some(&done)), Some("working"));
         assert_eq!(status_from(90, None), Some("working")); // 활동 중이면 역할 무관
-        assert_eq!(status_from(91, Some("assistant")), Some("waiting")); // 턴 종료 → 입력 대기
-        assert_eq!(status_from(3600, Some("assistant")), Some("waiting"));
-        assert_eq!(status_from(91, Some("user")), None); // 사용자가 마지막(전송 직후 등) → 대기 아님
-        assert_eq!(status_from(3601, Some("assistant")), None); // 1시간 지난 세션은 과거 기록
+        assert_eq!(status_from(91, Some(&q)), Some("waiting")); // 질문으로 턴 종료 → 답 대기
+        assert_eq!(status_from(3600, Some(&q)), Some("waiting"));
+        assert_eq!(status_from(91, Some(&done)), None); // 완료 보고로 끝난 턴은 답이 필요 없다
+        let opts = TranscriptMsg { options: vec!["A".into()], ..m("assistant", "골라 주세요") };
+        assert_eq!(status_from(91, Some(&opts)), Some("waiting")); // 선택지가 있으면 '?' 없어도 질문
+        assert_eq!(status_from(91, Some(&m("user", "이거 할까?"))), None); // 사용자가 마지막(전송 직후 등) → 대기 아님
+        assert_eq!(status_from(3601, Some(&q)), None); // 1시간 지난 세션은 과거 기록
     }
     #[test]
     fn queued_messages_shown_and_dequeue_replay_deduped() {

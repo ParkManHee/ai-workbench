@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,15 +11,16 @@ import {
   ToastAndroid,
   View,
 } from "react-native";
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HttpError, isUnauthorized, makeClient } from "../../src/lib/api";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
+import { ScheduleSection } from "../../src/components/ScheduleSection";
 import type { PC, SessionInfo } from "../../src/lib/types";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
-import { Button, EmptyState, Icon, ListRow, SheetFrame, StatusBadge } from "../../src/components/ui";
-import { formatUpdated, isActiveSession as isActive } from "../../src/lib/sessions";
+import { Button, EmptyState, Icon, keepWords, ListRow, SheetFrame, StatusBadge } from "../../src/components/ui";
+import { cleanupMessage, formatUpdated, isActiveSession as isActive, sessionPathParams } from "../../src/lib/sessions";
 
 
 export default function Sessions() {
@@ -66,7 +67,7 @@ export default function Sessions() {
           router.replace("/");
           return;
         }
-        setError("Failed to load sessions. Please try again.");
+        setError("세션을 불러오지 못했습니다. 다시 시도해 주세요.");
       } finally {
         if (isRefresh) setRefreshing(false);
         else setLoading(false);
@@ -97,6 +98,17 @@ export default function Sessions() {
     };
   }, [pcId, load]);
 
+  // 대화에서 돌아오면 재조회(다른 목록 화면과 같게) — 첫 로드는 위 효과가 하므로 두 번째 포커스부터, 스피너는 당김새로고침 것만
+  const reloadRef = useRef(() => {});
+  reloadRef.current = () => { if (pc) load(pc, true); };
+  const focusedRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (focusedRef.current) reloadRef.current();
+      focusedRef.current = true;
+    }, [])
+  );
+
   function handleRetry() {
     if (pc) load(pc, false);
   }
@@ -115,7 +127,7 @@ export default function Sessions() {
   function handlePress(item: SessionInfo) {
     router.push({
       pathname: "/chat/[project]",
-      params: { pc: pcId, project, path, session: item.session_id },
+      params: { pc: pcId, project, ...sessionPathParams(item, path), session: item.session_id },
     });
   }
 
@@ -124,7 +136,9 @@ export default function Sessions() {
     setEnding(item.session_id);
     try {
       const r = await makeClient(pc.baseUrl, pc.token).endSession(project, item.session_id);
-      if (!r.ended && Platform.OS === "android") {
+      if (r.worktree && Platform.OS === "android") {
+        ToastAndroid.show(cleanupMessage(r.worktree), ToastAndroid.LONG);
+      } else if (!r.ended && Platform.OS === "android") {
         ToastAndroid.show("아직 종료되지 않았습니다. 잠시 후 다시 확인하세요", ToastAndroid.LONG);
       }
       await load(pc, true);
@@ -155,7 +169,8 @@ export default function Sessions() {
   async function saveMeta(item: SessionInfo, body: { name?: string | null; archived?: boolean }) {
     if (!pc) return;
     try {
-      await makeClient(pc.baseUrl, pc.token).sessionMeta(project, item.session_id, body);
+      const r = await makeClient(pc.baseUrl, pc.token).sessionMeta(project, item.session_id, body);
+      if (r.worktree && Platform.OS === "android") ToastAndroid.show(cleanupMessage(r.worktree), ToastAndroid.LONG);
     } catch (e) {
       if (isUnauthorized(e)) {
         await removePC(pc.id);
@@ -182,6 +197,20 @@ export default function Sessions() {
               0,
             ),
     };
+    // 터미널에 안 열린 격리 세션 — 끝낼 프로세스는 없고 트리만 정리한다
+    const endIsolated = {
+      label: "세션 끝내기 · 격리 트리 정리",
+      onPress: () =>
+        setTimeout(
+          () =>
+            setSheet({
+              title: "격리 트리를 정리할까요?",
+              message: `변경이나 새 커밋이 없으면 트리와 브랜치 ${item.worktree?.branch ?? ""} 를 지웁니다. 있으면 남깁니다.`,
+              choices: [{ label: "정리", onPress: () => endLive(item) }],
+            }),
+          0,
+        ),
+    };
     setSheet({
       title: item.name || item.preview || "(빈 대화)",
       choices: [
@@ -193,7 +222,7 @@ export default function Sessions() {
           },
         },
         { label: item.archived ? "보관 해제" : "보관", onPress: () => saveMeta(item, { archived: !item.archived }) },
-        ...(item.live ? [end] : []),
+        ...(item.live ? [end] : item.worktree && !item.worktree.removed ? [endIsolated] : []),
       ],
     });
   }
@@ -239,7 +268,7 @@ export default function Sessions() {
         <EmptyState
           icon="error-outline"
           title={error}
-          action={<Button title="Retry" icon="refresh" variant="secondary" onPress={handleRetry} />}
+          action={<Button title="다시 시도" icon="refresh" variant="secondary" onPress={handleRetry} />}
         />
       ) : (
         <FlatList
@@ -247,9 +276,10 @@ export default function Sessions() {
           keyExtractor={(item) => item.session_id}
           contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
           keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={foldable ? <ScheduleSection pc={pc} project={project} /> : null}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
           ListEmptyComponent={
-            <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "No sessions found."} />
+            <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "세션이 없습니다."} />
           }
           renderItem={({ item }) => (
             <ListRow
@@ -269,7 +299,7 @@ export default function Sessions() {
               {item.live ? (
                 <View style={styles.liveRow}>
                   <Icon name="terminal" size={14} color={t.accent} />
-                  <Text style={styles.liveText}>PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다</Text>
+                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords("PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
                 </View>
               ) : null}
               {item.answer_preview ? (
@@ -372,7 +402,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: t.border,
+    borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,
   },
@@ -393,7 +423,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.xs,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
   liveText: {
     flex: 1,
@@ -403,11 +433,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   answerPreview: {
     fontSize: font.size.sm,
     color: t.subtext,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
   updated: {
     fontSize: font.size.xs,
     color: t.subtext,
-    marginTop: 2,
+    marginTop: space.xxs,
   },
 });

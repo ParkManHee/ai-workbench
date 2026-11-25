@@ -67,6 +67,8 @@ async function openFromNotification(data: Record<string, unknown> | undefined): 
       pc: pc.id,
       path: typeof data?.path === "string" ? data.path : "",
       ...(typeof data?.session === "string" && data.session ? { session: data.session } : {}),
+      // 격리 실행이면 path 는 그 트리이고 브랜치가 함께 온다
+      ...(typeof data?.branch === "string" && data.branch ? { branch: data.branch } : {}),
     },
   });
 }
@@ -121,6 +123,7 @@ export default function RootLayout() {
           <Stack.Screen name="sessions/[project]" options={{ title: "세션" }} />
           <Stack.Screen name="pair" options={{ title: "페어링" }} />
           <Stack.Screen name="devices" options={{ title: "페어링 기기" }} />
+          <Stack.Screen name="needs" options={{ title: "답 필요" }} />
           {/* chat/[project] 타이틀은 화면에서 프로젝트명으로 동적 설정 */}
           <Stack.Screen name="chat/[project]" options={{ title: "실행" }} />
         </Stack>
