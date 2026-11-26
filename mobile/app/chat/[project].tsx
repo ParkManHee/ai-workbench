@@ -1238,6 +1238,7 @@ export default function Chat() {
           <View style={styles.controlRow}>
           {controlsOpen ? (
           <>
+          {!channel ? (
           <View style={styles.planRow}>
             <Text style={styles.planLabel}>계획 모드</Text>
             <Switch
@@ -1250,8 +1251,9 @@ export default function Chat() {
               thumbColor={plan ? t.onAccent : t.subtext}
             />
           </View>
+          ) : null}
           {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
-          <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
+          {!channel ? <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} /> : null}
           <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
           {canIsolate ? (
             // 라벨·굵기를 고정해 켬·끔의 폭이 같다 — 눌러도 다음 칩이 줄을 바꾸지 않게. 켬은 아이콘·색으로만
@@ -1259,11 +1261,13 @@ export default function Chat() {
               <Text style={[styles.chipText, { color: isolate ? t.accent : t.text }]} numberOfLines={1}>격리</Text>
             </Chip>
           ) : null}
+          {!channel ? (
           <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
             <Text style={styles.chipText}>
               권한 <Text style={{ color: t.accent, fontWeight: font.weight.bold }}>{MODE_LABELS[mode]}</Text>
             </Text>
           </Chip>
+          ) : null}
           <View style={styles.iconRow}>
             <IconButton name="image" label="이미지 첨부" onPress={pickImages} disabled={uploading || images.length >= 3} />
             <IconButton name="public" label="dev 서버 프리뷰" onPress={openDevServerPreview} />
