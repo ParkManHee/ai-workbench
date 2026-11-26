@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HttpError, isUnauthorized, makeClient, streamUrl } from "../../src/lib/api";
 import { changedFilesLabel, initialChatState, reduceEvent, verdictLabel } from "../../src/lib/events";
 import { rewriteBangCommand } from "../../src/lib/bang";
+import { appendPolled, groupToolRuns } from "../../src/lib/chatMsgs";
 import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMsg, WsEvent } from "../../src/lib/types";
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
@@ -490,7 +491,7 @@ export default function Chat() {
         const res = await makeClient(p.baseUrl, p.token).transcript(project, sidRef.current!, nextLineRef.current);
         nextLineRef.current = res.next; // 항상 전진(필터로 메시지가 비어도 재파싱 중복 방지)
         if (res.messages.length > 0) {
-          setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
+          setChat((prev) => ({ ...prev, messages: appendPolled(prev.messages, res.messages.map(toChatMsg)) }));
         }
         if (!res.active && !channelRef.current) {
           stopPoll();
@@ -782,7 +783,7 @@ export default function Chat() {
       if (res.channel) {
         // 터미널 세션에 넣었다 — 말풍선을 먼저 보이고, 터미널 claude 가 기록한 뒤 대화 파일 기준으로 다시 맞춘다
         channelRef.current = true;
-        setChat((prev) => ({ ...prev, messages: [...prev.messages, userMsg] }));
+        setChat((prev) => ({ ...prev, messages: [...prev.messages, { ...userMsg, pending: true }] }));
         channelReloadRef.current = setTimeout(() => reloadTailAndPoll(pc), CHANNEL_RELOAD_MS);
         return;
       }
@@ -963,7 +964,7 @@ export default function Chat() {
             <Text style={styles.emptyChatHint}>{keepWords("입력칸을 누르면 모델·권한·자주 쓰는 지시를 고를 수 있습니다.")}</Text>
           </View>
         ) : null}
-        {chat.messages.map((m, i) => {
+        {groupToolRuns(chat.messages).map(({ key: i, msg: m }) => {
           const hasTools = m.role === "assistant" && m.tools && m.tools.length > 0;
           const hasText = m.text.trim().length > 0;
           const isOpen = expandedTools.has(i);

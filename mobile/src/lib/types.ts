@@ -9,7 +9,9 @@ export type WsEvent =
   | { kind: "tool_use"; name: string; summary: string }
   | { kind: "done"; exit: number | null; verdict: string; changed_files: number; session_id?: string | null }
   | { kind: "error"; message: string };
-export interface ChatMsg { role: "user" | "assistant"; text: string; tools?: string[]; toolDetails?: string[]; options?: string[]; todos?: string[] }
+export interface ChatMsg { role: "user" | "assistant"; text: string; tools?: string[]; toolDetails?: string[]; options?: string[]; todos?: string[];
+  /** 채널 전송 직후 먼저 붙인 말풍선 — 대화 기록에 같은 메시지가 오면 뺀다(chatMsgs#appendPolled) */
+  pending?: boolean }
 export interface ChatState { messages: ChatMsg[]; running: boolean; verdict: string | null; changedFiles: number; error: string | null }
 
 /** 페어링된 PC 하나(멀티-PC 지원). id는 baseUrl에서 파생된 안정적 식별자(pcs-util#pcId 참고). */
