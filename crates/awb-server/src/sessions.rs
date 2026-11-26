@@ -93,6 +93,9 @@ pub struct SessionRow {
     /// 격리 트리에서 돈 세션이면 그 트리(앱이 변경 보기·커밋·이어받기에 쓴다). 옛 앱은 무시한다
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktree::Worktree>,
+    /// 터미널 세션에 폰 채널(plugins/phone)이 붙어 있음 — 보내면 fork 대신 그 터미널 대화에 들어간다
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub channel: bool,
 }
 
 /// 메타를 붙이고 보관(기본 제외 / archived=true 면 보관만)·검색어로 거른다.
@@ -107,7 +110,7 @@ pub fn filter_rows(list: Vec<SessionInfo>, metas: &HashMap<String, SessionMeta>,
                 .iter().any(|f| f.to_lowercase().contains(q.as_str()));
             if !hit { return None; }
         }
-        Some(SessionRow { info, name: m.name, archived: m.archived, worktree: None })
+        Some(SessionRow { info, name: m.name, archived: m.archived, worktree: None, channel: false })
     }).collect()
 }
 

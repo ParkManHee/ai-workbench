@@ -230,6 +230,17 @@ pub struct ChatResult {
     /// 격리 트리에서 돌면 그 트리 — 앱이 변경 보기·이어받기 경로와 브랜치 표시에 쓴다
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktree::Worktree>,
+    /// 터미널 세션의 채널로 넣었다 — 실행(run)이 없고 답은 그 세션 대화 파일로 온다
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub channel: bool,
+}
+
+/// 터미널에 열려 있고 폰 채널이 붙은 세션이면 그 claude pid. 다른 프로젝트의 세션으로는 보내지 않는다(cwd 대조)
+fn channel_pid(st: &AppState, project: &str, repo: &str, sid: &str) -> Option<u32> {
+    let e = awb_core::live::find_live(sid)?;
+    let wt = crate::worktree::for_resume(st, project, Some(sid)).ok().flatten();
+    let dir = wt.as_ref().map_or(repo, |w| w.path.as_str());
+    (e.cwd.as_deref().is_some_and(|c| awb_core::live::same_dir(c, dir)) && crate::channel::attached(e.pid)).then_some(e.pid)
 }
 
 /// new_session 이면 저장된 마지막 세션을 쓰지 않는다 — 앱 "+ 새 대화" 의 첫 전송이 이전 대화를 잇던 것
@@ -250,6 +261,17 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
     if !PERMISSION_MODES.contains(&b.mode.as_str()) { return Err((StatusCode::BAD_REQUEST, format!("unknown mode: {}", b.mode))); }
     // 진행 중인 대화를 중간에 격리로 옮기지 않는다 — 이미 원래 트리에 쓴 변경과 대화가 갈린다
     if b.isolate && b.resume_session_id.is_some() { return Err((StatusCode::BAD_REQUEST, "격리는 새 대화의 첫 메시지에서만 켤 수 있습니다".into())); }
+    // 채널이 붙은 터미널 세션 — fork 하지 않고 그 터미널 대화에 넣는다. 모드·모델·계획은 그 터미널 설정을 따른다
+    if let Some(sid) = b.resume_session_id.clone().filter(|s| awb_core::transcript::safe_session_id(s)) {
+        let (st2, p, repo, prompt) = (st.clone(), project.clone(), proj.path.clone(), b.prompt.clone());
+        let sent = tokio::task::spawn_blocking(move || channel_pid(&st2, &p, &repo, &sid).map(|pid| crate::channel::send(pid, &prompt)))
+            .await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        match sent {
+            Some(Ok(())) => return Ok(Json(ChatResult { run_id: None, log: None, queued: false, position: None, worktree: None, channel: true })),
+            Some(Err(e)) => return Err((StatusCode::CONFLICT, e)),
+            None => {}
+        }
+    }
     let (resume, fork_of) = if b.isolate { (None, None) } else { resolve_resume(&st, &project, b.resume_session_id.clone(), b.new_session) };
     let wt = if b.isolate {
         let (p, repo) = (project.clone(), proj.path.clone());
@@ -270,7 +292,7 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
             let pos = st.queue.enqueue(&project, crate::queue::QueuedTurn {
                 prompt: b.prompt.clone(), plan: b.plan, resume_session_id: b.resume_session_id.clone(), mode: b.mode.clone(), model: b.model.clone(), effort: b.effort.clone(), new_session: b.new_session,
             });
-            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos), worktree: wt }));
+            return Ok(Json(ChatResult { run_id: None, log: None, queued: true, position: Some(pos), worktree: wt, channel: false }));
         }
         Err(e) => {
             // 방금 만든 빈 트리를 남기지 않는다(변경·커밋이 없을 때만 지워진다)
@@ -281,7 +303,7 @@ pub async fn chat_handler(State(st): State<AppState>, Path(project): Path<String
     let run_id = run_id_of(&h.log);
     st.runs.insert(&run_id, crate::runreg::RunMeta { log: h.log.clone(), pgid: h.pgid, workdir, project: project.clone(), notified: false, fork_of, worktree: wt.clone() });
     crate::push::spawn_watch(st.clone(), run_id.clone()); // 완료 워처: WS 미소비 시 푸시 발송, 완료 시 락 해제도 보장
-    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None, worktree: wt }))
+    Ok(Json(ChatResult { run_id: Some(run_id), log: Some(h.log), queued: false, position: None, worktree: wt, channel: false }))
 }
 
 pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<Json<awb_core::runlog::RunStatus>, StatusCode> {

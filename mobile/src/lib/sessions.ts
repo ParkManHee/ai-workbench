@@ -3,9 +3,11 @@ import type { SessionInfo, WorktreeCleanup } from "./types";
 /** 활성 세션 — 터미널 열림·실행 중·응답 대기. 세션 화면과 프로젝트 화면이 같은 기준을 쓴다 */
 export const isActiveSession = (s: SessionInfo) => !!(s.live || s.active || s.waiting);
 
-/** 대화 화면 경로 인자 — 격리 세션은 그 트리 경로와 브랜치(변경 보기·이어받기 명령·헤더). 정리된 트리는 원래 트리 */
-export function sessionPathParams(s: SessionInfo, path: string): { path: string; branch?: string } {
-  return s.worktree && !s.worktree.removed ? { path: s.worktree.path, branch: s.worktree.branch } : { path };
+/** 대화 화면 경로 인자 — 격리 세션은 그 트리 경로와 브랜치(변경 보기·이어받기 명령·헤더). 정리된 트리는 원래 트리.
+ * 채널이 붙은 터미널 세션이면 channel=1(대화 화면이 이어받기·fork 안내 대신 「터미널 연결됨」 을 보인다) */
+export function sessionPathParams(s: SessionInfo, path: string): { path: string; branch?: string; channel?: string } {
+  const p = s.worktree && !s.worktree.removed ? { path: s.worktree.path, branch: s.worktree.branch } : { path };
+  return s.channel ? { ...p, channel: "1" } : p;
 }
 
 /** 끝내기·보관 뒤 격리 트리 정리 결과 한 줄 */

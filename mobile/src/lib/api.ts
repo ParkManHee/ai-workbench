@@ -108,7 +108,7 @@ export function makeClient(baseUrl: string, token: string, f: F = fetch) {
         try { e.message = (await (r as any).text()) || e.message; } catch {} // 격리 트리 만들기 실패 사유 등 — 본문 없으면 상태만
         throw e;
       }
-      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null; worktree?: Worktree }>;
+      return (r as any).json() as Promise<{ run_id: string | null; log: string | null; queued: boolean; position: number | null; worktree?: Worktree; channel?: boolean }>;
     },
     cancel: (runId: string) => f(`${baseUrl}/cancel/${runId}`, { method: "POST", headers: h } as any),
     endSession: async (project: string, sessionId: string): Promise<{ ended: boolean; pid: number | null; worktree?: WorktreeCleanup }> => {

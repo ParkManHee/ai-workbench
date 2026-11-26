@@ -165,7 +165,10 @@ pub fn project_sessions(st: &AppState, project: &str, repo: &str, tx_root: &str,
     }
     list.sort_by(|a, b| b.updated.cmp(&a.updated));
     let mut rows = filter_rows(list, &st.sessions.metas(project), q, archived);
-    for r in &mut rows { r.worktree = owner.remove(&r.info.session_id); }
+    for r in &mut rows {
+        r.worktree = owner.remove(&r.info.session_id);
+        r.channel = r.info.live && awb_core::live::find_live(&r.info.session_id).is_some_and(|e| crate::channel::attached(e.pid));
+    }
     rows
 }
 

@@ -19,7 +19,9 @@ export interface PC { id: string; label: string; baseUrl: string; token: string;
 /** 데몬 `/sessions/:project` 응답 항목. */
 export interface SessionInfo { session_id: string; updated: number; preview: string; answer_preview: string; count: number; active: boolean; waiting: boolean; live?: boolean; app?: boolean; name?: string | null; archived?: boolean;
   /** 격리 트리에서 돈 세션이면 그 트리. 옛 데몬은 보내지 않는다 */
-  worktree?: Worktree }
+  worktree?: Worktree;
+  /** 터미널 세션에 폰 채널(plugins/phone)이 붙어 있음 — 보내면 갈라지지 않고 그 터미널 대화에 들어간다 */
+  channel?: boolean }
 /** 폰 격리 실행의 작업 트리(`<저장소>.wt-phone-<id>`, 브랜치 claude/phone-<id>). removed 면 정리돼 이어갈 수 없다 */
 export interface Worktree { path: string; branch: string; removed?: boolean }
 /** 세션 끝내기·보관 때 격리 트리 정리 결과 — removed=false 면 reason 이 남긴 이유 */

@@ -299,7 +299,7 @@ export default function Sessions() {
               {item.live ? (
                 <View style={styles.liveRow}>
                   <Icon name="terminal" size={14} color={t.accent} />
-                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords("PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
+                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords(item.channel ? "터미널 연결됨 — 보내면 그 터미널 대화에 바로 들어갑니다" : "PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
                 </View>
               ) : null}
               {item.answer_preview ? (
