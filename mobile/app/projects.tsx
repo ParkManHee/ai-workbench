@@ -109,12 +109,19 @@ export default function Projects() {
   const items = useMemo(() => buildItems(projects, showIdle), [projects, showIdle]);
   const groups = useMemo(() => groupItems(items), [items]);
 
-  const load = useCallback(async (p: PC, isRefresh: boolean) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
+  const load = useCallback(async (p: PC, isRefresh: boolean, silent = false) => {
+    if (!silent) {
+      if (isRefresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
+    }
     try {
       const client = makeClient(p.baseUrl, p.token);
+      if (silent) {
+        // 주기 조회는 작업 중 배지만 필요하다 — 준비 상태 배너(preflight)는 다시 묻지 않는다
+        setProjects(await client.projects());
+        return;
+      }
       const [projectList, preflightResult] = await Promise.all([
         client.projects(),
         client.preflight(),
@@ -122,6 +129,7 @@ export default function Projects() {
       setProjects(projectList);
       setPreflight(preflightResult);
     } catch (e) {
+      if (silent) return; // 주기 조회 실패는 화면을 오류로 바꾸지 않고 다음 주기에 맡긴다
       if (isUnauthorized(e)) {
         // Token revoked/invalid → drop this PC and send the user back to the PC list.
         await removePC(p.id);
@@ -130,6 +138,7 @@ export default function Projects() {
       }
       setError("프로젝트를 불러오지 못했습니다. 다시 시도해 주세요.");
     } finally {
+      if (silent) return;
       if (isRefresh) setRefreshing(false);
       else setLoading(false);
     }
@@ -164,6 +173,16 @@ export default function Projects() {
       load(pc, hasLoadedRef.current);
       hasLoadedRef.current = true;
     }, [pc, load])
+  );
+
+  // 「작업 중」 세션·프로젝트가 있는 동안만, 화면이 보일 때만 10초마다 조용히 재조회 — 열어 둔 채로도 끝난 세션의 배지가 풀린다
+  const hasActive = projects.some((p) => p.agent_status === "working" || p.sessions?.some((s) => s.active));
+  useFocusEffect(
+    useCallback(() => {
+      if (!pc || !hasActive) return;
+      const iv = setInterval(() => load(pc, true, true), 10000);
+      return () => clearInterval(iv);
+    }, [pc, hasActive, load])
   );
 
   function handleRetry() {
