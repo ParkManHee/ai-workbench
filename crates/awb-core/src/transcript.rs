@@ -172,14 +172,17 @@ pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usi
     (msgs, lines.len(), is_active(path, &vals))
 }
 
-/// 작업 중 — 90초 안에 쓰였고 마지막 대화 기록이 턴 종료(system turn_duration)가 아니다.
+/// 작업 중 — 90초 안에 쓰였고 마지막 대화 기록이 턴 종료가 아니다.
 /// 수정 시각만 보면 응답이 끝난 세션도 90초 동안 작업 중으로 남는다.
+/// 턴 종료: 터미널은 system turn_duration, 앱(-p)은 그게 없어 stop_hook_summary 나 end_turn 응답으로 끝난다.
+/// 스톱 훅이 턴을 이어 가면 그 뒤에 user 줄이 붙어 다시 작업 중이 된다.
 fn is_active(path: &str, vals: &[Option<Value>]) -> bool {
     let recent = fs::metadata(path).and_then(|m| m.modified()).ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| now().saturating_sub(d.as_secs()) <= 90).unwrap_or(false);
     let ended = vals.iter().rev().flatten()
         .find(|v| matches!(v.get("type").and_then(|t| t.as_str()), Some("user" | "assistant" | "system")))
-        .is_some_and(|v| v.get("subtype").and_then(|s| s.as_str()) == Some("turn_duration"));
+        .is_some_and(|v| matches!(v.get("subtype").and_then(|s| s.as_str()), Some("turn_duration" | "stop_hook_summary"))
+            || v.pointer("/message/stop_reason").and_then(|s| s.as_str()) == Some("end_turn"));
     recent && !ended
 }
 
@@ -434,6 +437,15 @@ mod tests {
         std::fs::write(&f, format!("{ans}{{\"type\":\"system\",\"subtype\":\"turn_duration\"}}\n{{\"type\":\"cost-state\"}}\n")).unwrap();
         assert!(!read_transcript(f.to_str().unwrap(), 0).2, "턴 종료 뒤엔 방금 썼어도 작업 중 아님");
         assert!(!read_transcript_page(f.to_str().unwrap(), None, 50, 3600).active);
+        // 앱(-p) 실행: turn_duration 없이 end_turn 응답 → stop_hook_summary 로 끝난다
+        let tool = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":\"\"}}\n";
+        std::fs::write(&f, tool).unwrap();
+        assert!(read_transcript(f.to_str().unwrap(), 0).2, "도구 호출 중이면 작업 중");
+        let end = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":\"끝\"}}\n";
+        std::fs::write(&f, format!("{tool}{end}")).unwrap();
+        assert!(!read_transcript(f.to_str().unwrap(), 0).2, "end_turn 응답이면 작업 중 아님");
+        std::fs::write(&f, format!("{tool}{end}{{\"type\":\"system\",\"subtype\":\"stop_hook_summary\"}}\n{{\"type\":\"last-prompt\"}}\n")).unwrap();
+        assert!(!read_transcript(f.to_str().unwrap(), 0).2, "스톱 훅 요약 뒤도 작업 중 아님");
     }
     #[test]
     fn epoch_to_iso_known_values() {

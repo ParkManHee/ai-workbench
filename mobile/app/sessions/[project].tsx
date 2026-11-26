@@ -211,6 +211,17 @@ export default function Sessions() {
           0,
         ),
     };
+    // 앱에서 연 세션은 끝나면 남는 프로세스가 없다 — 실행 중일 때만 멈출 수 있게
+    const cancelRun = {
+      label: "실행 취소",
+      onPress: async () => {
+        const c = makeClient(pc!.baseUrl, pc!.token);
+        const r = await c.activeRun(project).catch(() => null);
+        if (r?.run_id && r.session === item.session_id) await c.cancel(r.run_id).catch(() => null);
+        else if (Platform.OS === "android") ToastAndroid.show("이 세션의 실행을 찾지 못했습니다", ToastAndroid.SHORT);
+        await load(pc!, true);
+      },
+    };
     setSheet({
       title: item.name || item.preview || "(빈 대화)",
       choices: [
@@ -223,6 +234,7 @@ export default function Sessions() {
         },
         { label: item.archived ? "보관 해제" : "보관", onPress: () => saveMeta(item, { archived: !item.archived }) },
         ...(item.live ? [end] : item.worktree && !item.worktree.removed ? [endIsolated] : []),
+        ...(item.app && item.active && !item.live ? [cancelRun] : []),
       ],
     });
   }
