@@ -320,6 +320,8 @@ pub async fn status_handler(State(st): State<AppState>, Path(run_id): Path<Strin
 
 pub async fn cancel_handler(State(st): State<AppState>, Path(run_id): Path<String>) -> Result<StatusCode, StatusCode> {
     let meta = st.runs.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
+    // 사용자가 멈춘 실행은 완료/실패 푸시를 보내지 않는다 — 워처 게이트(should_push)를 먼저 닫는다
+    st.runs.mark_notified(&run_id);
     let dead = awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
     // SIGTERM/SIGKILL로 그룹 전체가 죽으면 래퍼가 .done을 못 쓸 수 있으므로, 취소를 관측 가능하게 직접 기록한다(128+SIGTERM=143).
     awb_core::runlog::mark_done_if_absent(&meta.log, 143);
@@ -1136,6 +1138,19 @@ mod tests {
         let app = crate::routes::router(state);
         let res = app.oneshot(Request::builder().uri("/projects").header("authorization", format!("Bearer {token}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn user_cancelled_run_is_not_push_target_but_plain_failure_is() {
+        let st = test_state(&tmp("awb_routes_test_cancel_push_root"), &tmp("awb_routes_test_cancel_push_dev.json"));
+        for id in ["cancelled", "failed"] {
+            // pgid 0 은 cancel_run 이 건드리지 않는 값이라 실제 프로세스가 죽지 않는다
+            st.runs.insert(id, crate::runreg::RunMeta { log: tmp(&format!("awb_routes_test_cancel_push_{id}.log")), pgid: 0, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None });
+        }
+        cancel_handler(State(st.clone()), Path("cancelled".to_string())).await.unwrap();
+        assert!(!crate::push::should_push(&st.runs, "cancelled"));
+        assert!(crate::push::should_push(&st.runs, "failed"));
+        let _ = std::fs::remove_file(tmp("awb_routes_test_cancel_push_cancelled.log.done"));
     }
 
     #[test]
