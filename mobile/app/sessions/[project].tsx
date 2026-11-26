@@ -113,8 +113,8 @@ export default function Sessions() {
     }, [])
   );
 
-  // 작업 중 세션이 있는 동안만, 화면이 보일 때만 10초마다 조용히 재조회 — 열어 둔 채로도 끝난 세션의 「작업 중」 이 풀린다
-  const hasActive = sessions.some(isActive);
+  // 「작업 중」(s.active) 세션이 있는 동안만, 화면이 보일 때만 10초마다 조용히 재조회 — 열어 둔 채로도 끝난 세션의 「작업 중」 이 풀린다
+  const hasActive = sessions.some((s) => s.active);
   useFocusEffect(
     useCallback(() => {
       if (!pc || !hasActive) return;
