@@ -4,8 +4,11 @@
 # 자동으로 확인(Enter)한 뒤 일반 대화형 터미널로 넘긴다. 경고가 안 나오면(문구 변경 등) 잡아 둔 화면을 그대로 내놓는다.
 log_user 0
 set timeout 10
+# 시스템 expect(Tcl 8.5)는 UTF-8 4바이트 글자(이모지)를 바이트별로 풀어 다시 인코딩해 「ð」 로 깨뜨린다 — 양쪽 채널을 바이트 그대로 통과시킨다
+fconfigure exp0 -encoding binary
 # bypass 를 shift+tab 순환에 넣는다 — 인자 없이 띄워도 빠지지 않게(시작 모드는 넘긴 인자대로)
 spawn -noecho claude --dangerously-load-development-channels plugin:phone@awb --allow-dangerously-skip-permissions {*}$argv
+fconfigure $spawn_id -encoding binary
 # 창 크기를 claude 쪽 pty 로 넘긴다 — spawn 은 크기를 복사하지 않아 0x0 이면 claude 가 아무것도 그리지 않는다.
 # 바뀔 때마다 다시(stty 가 그 pty 의 전경 프로세스에 SIGWINCH 를 보낸다)
 proc sync_size {} {
