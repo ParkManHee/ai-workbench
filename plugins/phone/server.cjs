@@ -6,6 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { execFileSync } = require("child_process");
 
 const CLAUDE_PID = process.ppid; // .mcp.json 의 command 를 claude 가 직접 띄운다(2026-11-26 실측: ppid = 레지스트리 pid)
 const DIR = path.join(os.homedir(), ".claude", "awb-channels", String(CLAUDE_PID));
@@ -27,7 +28,17 @@ function deliver() {
   }
 }
 
+// 사용자 범위로 설치돼 플래그 없는 claude 에도 이 서버가 뜬다 — 그 claude 는 채널 알림을 버리므로
+// 우편함을 열면 데몬이 채널로 보고 폰 메시지가 사라진다. 부모 인자에 이 채널 지정이 있을 때만 연다.
+function loadedAsChannel() {
+  try {
+    const cmd = execFileSync("ps", ["-o", "command=", "-p", String(CLAUDE_PID)], { encoding: "utf8" });
+    return /--(?:dangerously-load-development-channels|channels)[ =](?:\S+[ ,])*plugin:phone@awb\b/.test(cmd);
+  } catch { return false; }
+}
+
 function start() {
+  if (!loadedAsChannel()) return;
   fs.mkdirSync(IN, { recursive: true, mode: 0o700 });
   // 데몬은 이 pid 가 살아 있을 때만 채널이 붙었다고 본다 — claude 만 살아 있고 이 서버가 죽은 경우를 거른다
   fs.writeFileSync(path.join(DIR, "server.pid"), String(process.pid));
