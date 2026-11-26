@@ -961,7 +961,7 @@ export default function Chat() {
             <Text style={styles.emptyChatText}>
               {keepWords("메시지를 보내면 PC에서 Claude가 이 프로젝트 작업을 시작합니다.")}
             </Text>
-            <Text style={styles.emptyChatHint}>{keepWords("입력칸을 누르면 모델·권한·자주 쓰는 지시를 고를 수 있습니다.")}</Text>
+            {!channel ? <Text style={styles.emptyChatHint}>{keepWords("입력칸을 누르면 모델·권한·자주 쓰는 지시를 고를 수 있습니다.")}</Text> : null}
           </View>
         ) : null}
         {groupToolRuns(chat.messages).map(({ key: i, msg: m }) => {
