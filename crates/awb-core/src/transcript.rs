@@ -329,7 +329,7 @@ pub fn snippet(text: &str) -> String {
 }
 
 /// 트랜스크립트 마지막 기록의 entrypoint("cli"=터미널, "sdk-cli"=claude -p).
-fn last_entrypoint(path: &str) -> Option<String> {
+pub fn last_entrypoint(path: &str) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
     content.lines().rev().filter(|l| l.contains("\"entrypoint\"")).find_map(|l| {
         serde_json::from_str::<Value>(l).ok()?.get("entrypoint")?.as_str().map(|s| s.to_string())
@@ -337,16 +337,16 @@ fn last_entrypoint(path: &str) -> Option<String> {
 }
 
 pub fn list_sessions(slug: &str) -> Vec<SessionInfo> {
-    sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids(), false)
+    sessions_in(&format!("{}/{}", projects_root(), slug), &crate::live::live_interactive_ids(), &crate::live::live_app_ids(), false)
 }
 
 /// 앱에 보이는 세션 — 종료된 터미널 세션은 숨긴다(열린 터미널 세션과 앱이 이어 쓰는 대화만). 숨길 세션은 파싱하지 않는다.
 /// live id 를 밖에서 받는다 — 여러 프로젝트를 한 번에 볼 때(/projects) 레지스트리·ps 스캔을 한 번만 하려고.
-pub fn list_open_sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>) -> Vec<SessionInfo> {
-    sessions_in(dir, live_ids, true)
+pub fn list_open_sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, app_live: &std::collections::HashSet<String>) -> Vec<SessionInfo> {
+    sessions_in(dir, live_ids, app_live, true)
 }
 
-fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, open_only: bool) -> Vec<SessionInfo> {
+fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, app_live: &std::collections::HashSet<String>, open_only: bool) -> Vec<SessionInfo> {
     let mut out = vec![];
     let entries = match fs::read_dir(dir) { Ok(e) => e, Err(_) => return out };
     for e in entries.flatten() {
@@ -360,6 +360,8 @@ fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, open_onl
         let updated = e.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
         let (msgs, _n, active) = read_transcript(p.to_str().unwrap_or(""), 0);
+        // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 취소·비정상 종료엔 턴 종료 줄이 안 남아 90초 창만으론 남는다
+        let active = active && (!app || app_live.contains(&sid));
         // 미리보기: 최근 질문·최근 답변 요약(마지막 것 기준) — 리스트에서 대화의 현재 상태가 보이게
         let preview = msgs.iter().rev().find(|m| m.role == "user" && !m.text.trim().is_empty())
             .map(|m| snippet(&m.text)).unwrap_or_default();
@@ -395,6 +397,29 @@ mod tests {
         let listed = vec![SessionInfo { session_id: "has-tx".into(), updated: 9, preview: "p".into(), answer_preview: String::new(), count: 2, active: false, waiting: false, live: true, app: false }];
         let got: Vec<(String, u64, bool)> = fresh_live_sessions(&reg, &live, "/nx/repo/", &listed).into_iter().map(|s| (s.session_id, s.updated, s.live)).collect();
         assert_eq!(got, vec![("new-1".to_string(), 7, true)], "대화 파일 있는 세션·죽은 세션·다른 폴더 세션은 빼고 새 터미널 세션만");
+    }
+    // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 취소로 죽은 실행은 턴 종료 줄이 없어도 아니다. 터미널 세션은 90초 창 그대로
+    #[test]
+    fn dead_app_run_is_not_active_but_live_app_and_terminal_are() {
+        let base = std::env::temp_dir().join("awb_tx_app_alive");
+        let _ = std::fs::remove_dir_all(&base);
+        let (tx, reg) = (base.join("tx"), base.join("reg"));
+        std::fs::create_dir_all(&tx).unwrap();
+        std::fs::create_dir_all(&reg).unwrap();
+        for (sid, ep) in [("app-live", "sdk-cli"), ("app-dead", "sdk-cli"), ("term", "cli")] {
+            let turn = format!("{{\"type\":\"user\",\"entrypoint\":\"{ep}\",\"message\":{{\"role\":\"user\",\"content\":\"질문\"}}}}\n");
+            std::fs::write(tx.join(format!("{sid}.jsonl")), turn).unwrap();
+        }
+        // pid 2 는 SIGKILL 로 남은 레지스트리 파일 — 프로세스가 없어 시작시각을 못 얻는다. pid 4 는 죽은 앱 세션을 터미널에 열어 두기만 한 것
+        for (pid, sid, ep) in [(1, "app-live", "sdk-cli"), (2, "app-dead", "sdk-cli"), (3, "term", "cli"), (4, "app-dead", "cli")] {
+            let ent = format!(r#"{{"pid":{pid},"sessionId":"{sid}","procStart":"S{pid}","kind":"interactive","entrypoint":"{ep}"}}"#);
+            std::fs::write(reg.join(format!("{pid}.json")), ent).unwrap();
+        }
+        let app_live = crate::live::live_app_ids_in(reg.to_str().unwrap(), |pid| (pid != 2).then(|| format!("S{pid}")));
+        let mut got: Vec<(String, bool)> = sessions_in(tx.to_str().unwrap(), &Default::default(), &app_live, false)
+            .into_iter().map(|s| (s.session_id, s.active)).collect();
+        got.sort();
+        assert_eq!(got, vec![("app-dead".to_string(), false), ("app-live".to_string(), true), ("term".to_string(), true)]);
     }
     #[test]
     fn slug_matches_claude_convention() {

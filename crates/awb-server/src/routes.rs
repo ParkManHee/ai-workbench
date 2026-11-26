@@ -75,11 +75,12 @@ pub async fn projects_handler(State(st): State<AppState>) -> Json<Vec<ProjectDto
 fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashSet<String>) -> Vec<ProjectDto> {
     // 격리 트리도 origin 있는 git 루트라 스캔에 걸린다 — 그 세션은 원래 프로젝트 아래에 보이므로 따로 세우지 않는다
     let trees = crate::worktree::store(st).paths();
+    let app_live = awb_core::live::live_app_ids();
     awb_core::scan::scan_roots(&st.roots).into_iter().filter(|p| !trees.contains(&p.path)).map(|p| {
         let badge = awb_core::worklog::badge_for(&p.name);
         let slug = awb_core::transcript::project_slug(&p.path);
         let agent_status = awb_core::transcript::project_status(&slug);
-        let sessions = crate::worktree::project_sessions(st, &p.name, &p.path, tx_root, live_ids, None, false);
+        let sessions = crate::worktree::project_sessions(st, &p.name, &p.path, tx_root, live_ids, &app_live, None, false);
         ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status, sessions }
     }).collect()
 }
@@ -601,7 +602,7 @@ pub struct SessionsQuery { pub q: Option<String>, #[serde(default)] pub archived
 
 pub async fn sessions_handler(State(st): State<AppState>, Path(project): Path<String>, Query(sq): Query<SessionsQuery>) -> Result<Json<Vec<crate::sessions::SessionRow>>, StatusCode> {
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(crate::worktree::project_sessions(&st, &project, &proj.path, &awb_core::transcript::projects_root(), &awb_core::live::live_interactive_ids(), sq.q.as_deref(), sq.archived == 1)))
+    Ok(Json(crate::worktree::project_sessions(&st, &project, &proj.path, &awb_core::transcript::projects_root(), &awb_core::live::live_interactive_ids(), &awb_core::live::live_app_ids(), sq.q.as_deref(), sq.archived == 1)))
 }
 
 #[derive(serde::Deserialize)]
@@ -633,18 +634,20 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
     if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
     let path = crate::worktree::transcript_file(&st, &project, &proj.path, &session_id);
+    // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 목록(sessions_in)과 같은 기준
+    let alive = || awb_core::transcript::last_entrypoint(&path).as_deref() != Some("sdk-cli") || awb_core::live::live_app_ids().contains(&session_id);
     if q.tail == Some(1) {
         // 최초 로드: 최근 1시간(최대 limit, 기본 100), 없으면 마지막 20개 폴백
         let page = awb_core::transcript::read_transcript_page(&path, None, q.limit.unwrap_or(100), 3600);
-        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active })));
+        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active && alive() })));
     }
     if let Some(u) = q.until {
         // 위로 스크롤: u 이전 메시지 마지막 limit(기본 50)개
         let page = awb_core::transcript::read_transcript_page(&path, Some(u), q.limit.unwrap_or(50), 3600);
-        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active })));
+        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active && alive() })));
     }
     let (msgs, next, active) = awb_core::transcript::read_transcript(&path, q.from);
-    Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active })))
+    Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active && alive() })))
 }
 
 /// PC 터미널에서 열린 대화형 세션을 앱에서 끝낸다. 레지스트리·시작시각·cwd 가 모두 맞는 pid 에만 신호를 보낸다.

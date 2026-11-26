@@ -70,6 +70,23 @@ pub fn find_live(session_id: &str) -> Option<LiveEntry> {
     find_live_in(&sessions_dir(), session_id, proc_lstart)
 }
 
+/// 살아 있는 앱 실행(데몬이 띄운 claude -p)의 세션 id. 항목은 실행 0.5초 안에 생겨 트랜스크립트보다 먼저고(--resume 이면 그 id),
+/// 정상 종료·SIGTERM 엔 지워지지만 SIGKILL 엔 남아서 시작시각 대조로 거른다(2026-11-26 실측).
+pub fn live_app_ids_in(dir: &str, lstart: impl Fn(u32) -> Option<String>) -> HashSet<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return HashSet::new() };
+    entries.flatten().filter_map(|e| {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+        if v.get("entrypoint")?.as_str()? != "sdk-cli" { return None; }
+        let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
+        if lstart(pid).as_deref() != Some(v.get("procStart")?.as_str()?) { return None; }
+        v.get("sessionId")?.as_str().map(str::to_string)
+    }).collect()
+}
+
+pub fn live_app_ids() -> HashSet<String> {
+    live_app_ids_in(&sessions_dir(), proc_lstart)
+}
+
 /// 레지스트리 항목과 그 파일의 수정시각(초) — 읽기만 하고 ps 는 띄우지 않는다. 살아 있는지는 live_interactive_ids 로 거른다.
 pub fn registry() -> Vec<(LiveEntry, u64)> {
     let Ok(entries) = std::fs::read_dir(sessions_dir()) else { return vec![] };
