@@ -79,10 +79,16 @@ fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashS
     awb_core::scan::scan_roots(&st.roots).into_iter().filter(|p| !trees.contains(&p.path)).map(|p| {
         let badge = awb_core::worklog::badge_for(&p.name);
         let slug = awb_core::transcript::project_slug(&p.path);
-        let agent_status = awb_core::transcript::project_status(&slug);
         let sessions = crate::worktree::project_sessions(st, &p.name, &p.path, tx_root, live_ids, &app_live, None, false);
+        let agent_status = settle_working(awb_core::transcript::project_status(&slug), &sessions);
         ProjectDto { name: p.name, path: p.path, last_activity: p.last_activity, badge, agent_status, sessions }
     }).collect()
+}
+
+/// 프로젝트 「작업 중」 은 세션 줄 배지(active)와 같은 근거여야 한다 — 파일 수정 시각만 보면 턴이 끝난 뒤에도 90초 남는다.
+fn settle_working(status: Option<String>, sessions: &[crate::sessions::SessionRow]) -> Option<String> {
+    if status.as_deref() == Some("working") && !sessions.iter().any(|s| s.info.active) { return None; }
+    status
 }
 
 /// 답 필요 목록 — 이 PC 의 모든 프로젝트에서 권한 요청과 질문으로 끝난(답 대기) 세션을 한 번에.
@@ -788,6 +794,19 @@ mod tests {
             resume: crate::resume::ResumeStore::load(&std::env::temp_dir().join("awb_routes_test_resume.json").to_string_lossy().to_string()),
             schedules: crate::schedule::ScheduleStore::load(&std::env::temp_dir().join("awb_routes_test_schedules.json").to_string_lossy().to_string()),
         }
+    }
+
+    #[test]
+    fn project_working_follows_active_session() {
+        let row = |active| crate::sessions::SessionRow {
+            info: awb_core::transcript::SessionInfo { session_id: "s".into(), updated: 0, preview: String::new(), answer_preview: String::new(), count: 0, active, waiting: false, live: false, app: false },
+            name: None, archived: false, worktree: None, channel: false,
+        };
+        let w = || Some("working".to_string());
+        assert_eq!(settle_working(w(), &[row(false)]), None); // 방금 턴이 끝난 세션뿐
+        assert_eq!(settle_working(w(), &[]), None);
+        assert_eq!(settle_working(w(), &[row(false), row(true)]), w());
+        assert_eq!(settle_working(Some("waiting".into()), &[row(false)]), Some("waiting".into()));
     }
 
     #[test]
