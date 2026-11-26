@@ -14,7 +14,7 @@ import { isUnauthorized, makeClient } from "../src/lib/api";
 import type { PC, Preflight, Project, SessionInfo } from "../src/lib/types";
 import { getPC, removePC } from "../src/store/pcs";
 import { font, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
-import { Button, EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
+import { Avatar, Button, Card, EmptyState, Icon, ListRow, StatusBadge } from "../src/components/ui";
 import { formatUpdated, isActiveSession, sessionPathParams } from "../src/lib/sessions";
 
 /** 프로젝트 아래에 붙이는 지난 대화 수 — 활성 세션은 개수와 무관하게 전부 보인다 */
@@ -67,6 +67,19 @@ function itemKey(item: Item): string {
   }
 }
 
+// 프로젝트와 그 세션 줄을 한 카드에 담는다(시안 8) — 프로젝트·접기 줄이 새 묶음을 연다
+function groupItems(items: Item[]): Item[][] {
+  const groups: Item[][] = [];
+  for (const it of items) {
+    if (it.kind === "project" || it.kind === "fold" || groups.length === 0) groups.push([it]);
+    else groups[groups.length - 1].push(it);
+  }
+  return groups;
+}
+
+/** 아바타 지름 — 세션 줄은 아바타 오른쪽 글자 선에 맞춰 들여 쓴다 */
+const AVATAR = 44;
+
 function badgeText(project: Project): string | null {
   const b = project.badge;
   if (!b) return null;
@@ -94,6 +107,7 @@ export default function Projects() {
   const [error, setError] = useState<string | null>(null);
   const [showIdle, setShowIdle] = useState(false);
   const items = useMemo(() => buildItems(projects, showIdle), [projects, showIdle]);
+  const groups = useMemo(() => groupItems(items), [items]);
 
   const load = useCallback(async (p: PC, isRefresh: boolean) => {
     if (isRefresh) setRefreshing(true);
@@ -193,7 +207,7 @@ export default function Projects() {
           onPress={() => handlePress(item.project)}
           accessibilityRole="button"
           accessibilityLabel={`${item.project.name} 세션 전체 ${item.total}개`}
-          style={({ pressed }) => [styles.child, styles.more, pressed ? { backgroundColor: t.surface } : null]}
+          style={({ pressed }) => [styles.child, styles.more, pressed ? { backgroundColor: t.surfaceAlt } : null]}
         >
           <Text style={styles.moreText}>전체 {item.total}개</Text>
           <Icon name="chevron-right" size={20} color={t.accent} />
@@ -206,11 +220,17 @@ export default function Projects() {
         <Pressable
           onPress={() => handleSessionPress(item.project, s)}
           accessibilityRole="button"
-          style={({ pressed }) => [styles.child, pressed ? { backgroundColor: t.surface } : null]}
+          style={({ pressed }) => [styles.child, pressed ? { backgroundColor: t.surfaceAlt } : null]}
         >
           <View style={styles.childBody}>
             <Text style={styles.childTitle} numberOfLines={1}>{s.name || s.preview || "(빈 대화)"}</Text>
             <View style={styles.childMeta}>
+              {s.worktree && !s.worktree.removed ? (
+                <>
+                  <Icon name="call-split" size={14} color={t.accent} />
+                  <Text style={styles.childTag}>격리 · </Text>
+                </>
+              ) : null}
               {s.live ? <Icon name="terminal" size={14} color={t.accent} /> : null}
               <Text style={styles.childMetaText} numberOfLines={1}>
                 {s.live ? "PC 터미널 · " : ""}{formatUpdated(s.updated)}
@@ -225,6 +245,8 @@ export default function Projects() {
     const badge = badgeText(project);
     return (
       <ListRow
+        divider={false}
+        left={<Avatar name={project.name} size={AVATAR} />}
         title={project.name}
         subtitle={project.path}
         subtitleEllipsize="middle"
@@ -271,12 +293,15 @@ export default function Projects() {
         />
       ) : (
         <FlatList
-          data={items}
-          keyExtractor={itemKey}
+          data={groups}
+          keyExtractor={(g) => itemKey(g[0])}
           contentContainerStyle={{ paddingBottom: insets.bottom + space.md, flexGrow: 1 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[t.accent]} progressBackgroundColor={t.surface} />}
           ListEmptyComponent={<EmptyState icon="folder-open" title="프로젝트가 없습니다." />}
-          renderItem={renderItem}
+          renderItem={({ item: g }) =>
+            g[0].kind === "fold" ? renderItem({ item: g[0] }) : (
+              <Card>{g.map((it) => <View key={itemKey(it)}>{renderItem({ item: it })}</View>)}</Card>
+            )}
         />
       )}
     </View>
@@ -299,7 +324,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: space.sm,
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
-    backgroundColor: t.surface,
   },
   preflightText: {
     flex: 1,
@@ -322,11 +346,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     alignItems: "center",
     gap: space.md,
     minHeight: TOUCH,
-    paddingLeft: space.xl + space.lg,
+    paddingLeft: space.lg + AVATAR + space.md,
     paddingRight: space.lg,
     paddingVertical: space.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: t.border,
   },
   childBody: {
     flex: 1,
@@ -340,6 +362,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.xs,
+  },
+  childTag: {
+    fontSize: font.size.xs,
+    fontWeight: font.weight.bold,
+    color: t.accent,
   },
   childMetaText: {
     flexShrink: 1,

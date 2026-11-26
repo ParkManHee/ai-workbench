@@ -6,6 +6,7 @@ import { makeClient } from "../src/lib/api";
 import { fetchNeeds, NEEDS_POLL_MS, type PcNeeds } from "../src/lib/needs";
 import { permView } from "../src/lib/permSummary";
 import { formatUpdated, sessionPathParams } from "../src/lib/sessions";
+import { hostPort } from "../src/lib/pcs-util";
 import { loadPCs } from "../src/store/pcs";
 import { font, radius, space, useTheme, type Theme } from "../src/lib/theme";
 import { Button, EmptyState, Icon, ListRow } from "../src/components/ui";
@@ -67,7 +68,7 @@ export default function Needs() {
   const perms = (list ?? []).flatMap((x) => (x.data?.permissions ?? []).map((p) => ({ pc: x.pc, p })));
   const waiting = (list ?? []).flatMap((x) => (x.data?.waiting ?? []).map((s) => ({ pc: x.pc, s })))
     .sort((a, b) => b.s.updated - a.s.updated);
-  const offline = (list ?? []).filter((x) => x.reason === "offline").map((x) => x.pc.label);
+  const offline = (list ?? []).filter((x) => x.reason === "offline").map((x) => `${x.pc.label} (${hostPort(x.pc.baseUrl)})`);
   const old = (list ?? []).filter((x) => x.reason === "old").map((x) => x.pc.label);
 
   return (
@@ -89,14 +90,14 @@ export default function Needs() {
           <Text style={styles.permBody} {...(permView(p.tool_name, p.summary).kind === "file" ? PATH_LINE : BODY_LINES)}>{permLine(p.tool_name, p.summary)}</Text>
           <View style={styles.permButtons}>
             <Button title="허용" style={styles.permButton} onPress={() => answer(pc, p.id, true)} />
-            <Button title="거부" variant="danger" style={styles.permButton} onPress={() => answer(pc, p.id, false)} />
+            <Button title="거절" variant="danger" style={styles.permButton} onPress={() => answer(pc, p.id, false)} />
           </View>
         </View>
       ))}
 
       {waiting.length > 0 ? <Text style={styles.section}>답 기다리는 대화 {waiting.length}</Text> : null}
       {waiting.map(({ pc, s }) => (
-        <ListRow
+        <ListRow card
           key={`${pc.id}:${s.project}:${s.session_id}`}
           title={s.name || s.preview || "제목 없는 대화"}
           subtitle={`${s.project}${multiPc ? ` · ${pc.label}` : ""} · ${formatUpdated(s.updated)}`}
@@ -133,12 +134,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingBottom: space.sm,
   },
   perm: {
-    marginHorizontal: space.lg,
+    marginHorizontal: space.md,
     marginBottom: space.md,
     padding: space.md,
     gap: space.sm,
-    borderRadius: radius.md,
-    backgroundColor: t.surface,
+    borderRadius: radius.lg,
+    backgroundColor: t.elevated,
+    boxShadow: t.shadowRaised,
   },
   permHead: {
     flexDirection: "row",

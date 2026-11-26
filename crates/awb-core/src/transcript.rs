@@ -119,8 +119,16 @@ fn enqueued_user_text(v: &Value) -> Option<String> {
     if v.get("type").and_then(|t| t.as_str()) != Some("queue-operation") { return None; }
     if v.get("operation").and_then(|o| o.as_str()) != Some("enqueue") { return None; }
     let c = v.get("content").and_then(|c| c.as_str())?.trim();
+    let c = channel_body(c).unwrap_or(c);
     if c.is_empty() || is_noise_text(c) { return None; }
     Some(c.to_string())
+}
+
+/// 채널 주입(`<channel source="…" from="phone">\n본문\n</channel>`) → 본문. 폰 채널로 터미널 세션에 보낸 메시지는
+/// enqueue 로 기록되고 user 라인은 isMeta 라 숨겨진다(2026-11-26 실측) — 사용자 말풍선으로 보이게 껍질만 벗긴다
+fn channel_body(s: &str) -> Option<&str> {
+    let (_, body) = s.strip_prefix("<channel ")?.split_once('>')?;
+    Some(body.strip_suffix("</channel>")?.trim())
 }
 fn queued_msg(text: String) -> TranscriptMsg {
     TranscriptMsg { role: "user".to_string(), text, tools: vec![], tool_details: vec![], options: vec![], todos: vec![] }
@@ -468,6 +476,21 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].text.contains("어느 방식으로"));
         assert_eq!(msgs[0].options, vec!["A안".to_string(), "B안".to_string()]);
+    }
+    #[test]
+    fn phone_channel_message_shown_once_without_wrapper() {
+        let dir = std::env::temp_dir().join("awb_tx_channel"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c1.jsonl");
+        // 2026-11-26 터미널 claude(plugin:phone@awb) 실측 기록에서 필요한 필드만
+        std::fs::write(&f, concat!(
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<channel source=\\\"plugin:phone:awb\\\" from=\\\"phone\\\">\\n폰에서 보냄\\n</channel>\"}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"dequeue\"}\n",
+            "{\"type\":\"user\",\"isMeta\":true,\"origin\":{\"kind\":\"channel\",\"server\":\"plugin:phone:awb\"},\"message\":{\"role\":\"user\",\"content\":\"<channel source=\\\"plugin:phone:awb\\\" from=\\\"phone\\\">\\n폰에서 보냄\\n</channel>\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"PHONE-OK\"}]}}\n"
+        )).unwrap();
+        let (msgs, _next, _active) = read_transcript(f.to_str().unwrap(), 0);
+        let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
+        assert_eq!(got, vec![("user", "폰에서 보냄"), ("assistant", "PHONE-OK")]);
     }
     #[test]
     fn noise_and_meta_user_lines_hidden() {

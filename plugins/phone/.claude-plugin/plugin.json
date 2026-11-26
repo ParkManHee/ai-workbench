@@ -1,0 +1,5 @@
+{
+  "name": "phone",
+  "version": "0.1.0",
+  "description": "폰 앱(ai-workbench)에서 보낸 메시지를 열린 터미널 claude 세션에 넣는 채널"
+}

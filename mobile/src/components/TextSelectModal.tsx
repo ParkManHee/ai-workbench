@@ -53,6 +53,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   hint: { flex: 1, fontSize: font.size.sm, color: t.subtext },
   body: { flex: 1 },
   bodyContent: { padding: space.lg },
-  text: { fontSize: font.size.md, lineHeight: 24, color: t.text },
+  text: { fontSize: font.size.md, lineHeight: font.lineHeight.body, color: t.text },
   copyAll: { marginHorizontal: space.lg },
 });

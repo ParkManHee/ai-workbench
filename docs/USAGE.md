@@ -83,3 +83,28 @@ npm run tauri dev                  # 앱 창 실행 (첫 실행은 Rust 빌드�
 ## 8. 피드백
 
 테스트 중 이상/원하는 개선은 Slack `#claude-ai-workbench` 에 남겨주세요 — 폴링으로 반영합니다.
+
+## 9. 폰 → 열린 터미널 세션 (채널)
+
+폰에서 보낸 메시지를 PC 터미널에 열려 있는 claude 대화에 그대로 넣는다(Claude Code Channels). 채널 없이 연 터미널
+세션은 지금처럼 갈라(fork) 이어 간다. 채널 서버는 `plugins/phone`(마켓플레이스 `awb`, 플러그인 `phone`)이다.
+
+설치(한 번, 저장소 경로는 자기 것으로):
+```bash
+claude plugin marketplace add ~/github/ai-workbench/plugins   # 폴더를 그대로 읽는다 — 저장소를 갱신하면 다음 시작부터 반영
+claude plugin install phone@awb
+ln -s ~/github/ai-workbench/scripts/awb-claude ~/.local/bin/awb-claude
+```
+
+실행 — `claude` 대신 `awb-claude`(인자는 claude 로 그대로 간다):
+```bash
+awb-claude                      # 새 대화
+awb-claude --resume <세션 id>    # 기존 대화에 채널을 붙여 다시 열기
+```
+- 조직 allowlist 없이 쓰려고 `--dangerously-load-development-channels plugin:phone@awb` 로 띄우고, 그 경고 화면은
+  래퍼가 가린 채 자동으로 확인한다. 래퍼는 `/usr/bin/expect` 로 돈다(macOS 기본 포함).
+- 앱 세션 목록·대화 화면에 「터미널 연결됨」 이 보이면 채널로 들어간다. 답은 그 세션 대화 파일에서 읽어 폰에 보인다.
+- 폰에서 고른 모드·모델·계획 토글은 채널 전송에 쓰이지 않는다 — 터미널 claude 의 설정을 따른다.
+- 권한 요청은 폰으로 오지 않는다 — 터미널에서 답한다.
+- 한 번도 대화하지 않은 새 터미널 세션은 대화 파일이 없어 목록에 아직 안 뜬다. 터미널에서 한 번 말하면 뜬다.
+- 처음 여는(신뢰 확인 전) 폴더에서는 경고를 찾느라 10초 뒤에 신뢰 확인 화면이 보이고, 그 뒤 경고는 직접 Enter 로 넘긴다.

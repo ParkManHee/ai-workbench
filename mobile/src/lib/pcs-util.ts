@@ -7,6 +7,11 @@ export function pcId(baseUrl: string): string {
   return noScheme.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** baseUrl("http://host:port/...")의 host:port — 같은 이름의 PC 를 구별해 보일 때 */
+export function hostPort(baseUrl: string): string {
+  return baseUrl.replace(/^[a-zA-Z]+:\/\//, "").replace(/\/.*$/, "");
+}
+
 /** 같은 baseUrl의 PC가 있으면 교체(중복 방지), 없으면 목록 끝에 추가. 입력 배열은 변경하지 않는다. */
 export function upsertPC(list: PC[], pc: PC): PC[] {
   const idx = list.findIndex((p) => p.baseUrl === pc.baseUrl);

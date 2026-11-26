@@ -282,7 +282,7 @@ export default function Sessions() {
             <EmptyState icon="forum" title={pastRows.length > 0 && foldable ? "활성 세션 없음" : "세션이 없습니다."} />
           }
           renderItem={({ item }) => (
-            <ListRow
+            <ListRow card
               title={item.name || item.preview || "(빈 대화)"}
               onPress={() => handlePress(item)}
               onLongPress={() => handleLongPress(item)}
@@ -299,7 +299,7 @@ export default function Sessions() {
               {item.live ? (
                 <View style={styles.liveRow}>
                   <Icon name="terminal" size={14} color={t.accent} />
-                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords("PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
+                  <Text style={styles.liveText} textBreakStrategy="balanced">{keepWords(item.channel ? "터미널 연결됨 — 보내면 그 터미널 대화에 바로 들어갑니다" : "PC 터미널에서 열림 — 보내면 갈라서 새 대화로 이어집니다")}</Text>
                 </View>
               ) : null}
               {item.answer_preview ? (
@@ -383,11 +383,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    marginHorizontal: space.lg,
+    marginHorizontal: space.md,
     marginBottom: space.sm,
     paddingHorizontal: space.md,
     height: TOUCH,
     borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.inputBorder,
     backgroundColor: t.surface,
   },
   searchInput: {

@@ -182,7 +182,7 @@ export default function Index() {
           const online = onlineById[item.id];
           const active = statusById[item.id];
           return (
-            <ListRow
+            <ListRow card
               title={item.label}
               subtitle={hostOf(item.baseUrl)}
               onPress={() => handlePress(item)}

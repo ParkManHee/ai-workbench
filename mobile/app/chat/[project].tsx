@@ -29,7 +29,7 @@ import type { ChatMsg, ChatState, PC, RateLimit, ResumeReservation, TranscriptMs
 import Markdown from "react-native-markdown-display";
 import { getPC, removePC } from "../../src/store/pcs";
 import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../../src/lib/theme";
-import { Button, Chip, Icon, IconButton, keepWords } from "../../src/components/ui";
+import { Avatar, Button, Chip, Icon, IconButton, keepWords } from "../../src/components/ui";
 import { ChoiceSheet, type ChoiceSheetState } from "../../src/components/ChoiceSheet";
 import { TextSelectModal } from "../../src/components/TextSelectModal";
 import { GitSheet } from "../../src/components/GitSheet";
@@ -70,13 +70,18 @@ interface DiffSummary {
   run?: string;
 }
 
+/** Claude 아바타 지름 — 도구 줄·실행 중 줄도 이만큼 들여 말풍선과 같은 선에 선다 */
+const BOT_AVATAR = 32;
+/** 채널 전송 뒤 대화 파일을 다시 읽기까지 — 채널 서버(500ms 폴)가 넣고 터미널 claude 가 enqueue 를 쓰는 시간 */
+const CHANNEL_RELOAD_MS = 1500;
+
 export default function Chat() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   // 어시스턴트 말풍선의 마크다운 렌더 스타일(테마 연동) — **, ``` 등이 원문으로 노출되지 않게 한다
   const mdStyles = useMemo(
     () => ({
-      body: { color: t.text, fontSize: font.size.body, lineHeight: 22 },
+      body: { color: t.text, fontSize: font.size.body, lineHeight: font.lineHeight.body },
       paragraph: { marginTop: 0, marginBottom: space.xs },
       heading1: { color: t.text, fontSize: font.size.lg, fontWeight: "700" as const, marginVertical: space.xs },
       heading2: { color: t.text, fontSize: font.size.md, fontWeight: "700" as const, marginVertical: space.xs },
@@ -97,7 +102,7 @@ export default function Chat() {
     }),
     [t]
   );
-  const { project, pc: pcId, path, session, fresh, branch } = useLocalSearchParams<{
+  const { project, pc: pcId, path, session, fresh, branch, channel: channelParam } = useLocalSearchParams<{
     project: string;
     pc: string;
     path: string;
@@ -105,7 +110,15 @@ export default function Chat() {
     fresh?: string;
     /** 격리 세션이면 그 브랜치 — path 는 그때 격리 트리 경로다 */
     branch?: string;
+    /** "1" 이면 폰 채널이 붙은 터미널 세션 — 보내면 그 터미널 대화에 들어간다 */
+    channel?: string;
   }>();
+  // 채널 세션: 실행(run)이 없고 답은 터미널 대화 파일로 온다 — 폴을 멈추지 않고, 이어받기·fork 안내를 감춘다.
+  // 보낸 결과(res.channel)로 갱신한다 — 그 사이 터미널이 닫혔으면 데몬이 평소처럼 갈라 이어 간다
+  const [channel, setChannel] = useState(channelParam === "1");
+  const channelRef = useRef(channel);
+  channelRef.current = channel;
+  const channelReloadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 격리 트리(폰 작업별 워크트리) — 새 대화 첫 메시지에서 「격리」 를 켜고 보내면 데몬이 만들어 돌려준다
   const [wt, setWt] = useState<{ path: string; branch: string } | null>(branch && path ? { path, branch } : null);
   // 전송 직후 붙는 스트림의 done 처리(이전 렌더의 클로저)도 새 트리를 보게 — 변경 보기는 ref 로 읽는다
@@ -228,6 +241,7 @@ export default function Chat() {
     return () => {
       wsRef.current?.close();
       wsRef.current = null;
+      if (channelReloadRef.current) clearTimeout(channelReloadRef.current); // 떠난 뒤 폴을 새로 띄우지 않게
     };
   }, []);
 
@@ -478,7 +492,7 @@ export default function Chat() {
         if (res.messages.length > 0) {
           setChat((prev) => ({ ...prev, messages: [...prev.messages, ...res.messages.map(toChatMsg)] }));
         }
-        if (!res.active) {
+        if (!res.active && !channelRef.current) {
           stopPoll();
           // attach 상태 해제(원격 실행 종료)
           if (doneRef.current) {
@@ -544,7 +558,7 @@ export default function Chat() {
         prevRef.current = res.prev;
         setChat({ messages: res.messages.map(toChatMsg), running: false, verdict: null, changedFiles: 0, error: null });
         setHistoryLoaded(true);
-        if (res.active) {
+        if (res.active || channelRef.current) {
           startPoll(pc);
           attachActiveRun(pc); // 진행 중 실행이 있으면 취소 가능하게 attach
         }
@@ -764,6 +778,14 @@ export default function Chat() {
         wtRef.current = { path: res.worktree.path, branch: res.worktree.branch };
         setWt(wtRef.current);
       }
+      setChannel(!!res.channel);
+      if (res.channel) {
+        // 터미널 세션에 넣었다 — 말풍선을 먼저 보이고, 터미널 claude 가 기록한 뒤 대화 파일 기준으로 다시 맞춘다
+        channelRef.current = true;
+        setChat((prev) => ({ ...prev, messages: [...prev.messages, userMsg] }));
+        channelReloadRef.current = setTimeout(() => reloadTailAndPoll(pc), CHANNEL_RELOAD_MS);
+        return;
+      }
       if (res.queued) {
         // 실행 중 → 서버 큐에 적재됨. 현재 뷰(스트림/폴)는 그대로 두고 안내만 붙인다.
         setChat((prev) => ({
@@ -831,7 +853,13 @@ export default function Chat() {
           <Text style={styles.wtText} numberOfLines={1} ellipsizeMode="middle">격리 · {wt.branch}</Text>
         </View>
       ) : null}
-      {sid && workPath && controlsOpen ? (
+      {channel ? (
+        <View style={[styles.wtBar, styles.channelBar]} accessible accessibilityLabel="터미널 연결됨. 보내는 메시지가 PC 터미널의 이 대화에 바로 들어갑니다">
+          <Icon name="terminal" size={16} color={t.success} />
+          <Text style={styles.wtText} numberOfLines={1}>터미널 연결됨 · 보내면 PC 터미널 대화에 바로 들어갑니다</Text>
+        </View>
+      ) : null}
+      {sid && workPath && controlsOpen && !channel ? (
         <Pressable style={styles.resumeBar} onLongPress={() => copyText(`cd ${workPath} && claude --resume ${sid}`)}>
           {/* 한 줄 — 긴 경로가 서너 줄로 접혀 대화를 밀어내던 것. 전체는 복사로 */}
           <Text style={styles.resumeLabel}>PC에서 이어받기</Text>
@@ -963,7 +991,7 @@ export default function Chat() {
               </View>
             );
           }
-          return (
+          const bubble = (
             <Pressable
               key={i}
               style={m.role === "user" ? styles.userBubble : styles.assistantBubble}
@@ -979,6 +1007,12 @@ export default function Chat() {
                 )
               ) : null}
             </Pressable>
+          );
+          return m.role === "user" ? bubble : (
+            <View key={i} style={styles.botRow}>
+              <Avatar name="C" size={BOT_AVATAR} color={t.accent} textColor={t.onAccent} />
+              {bubble}
+            </View>
           );
         })}
 
@@ -1066,7 +1100,7 @@ export default function Chat() {
       ) : null}
       </View>
 
-      <KeyboardStickyView>
+      <KeyboardStickyView style={styles.sticky}>
         {/* 승인 모드 실행의 권한 요청 — 허용/거부 */}
         {perms.map((pm) => (
           <View key={pm.id} style={styles.permCard}>
@@ -1219,7 +1253,10 @@ export default function Chat() {
           <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} />
           <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
           {canIsolate ? (
-            <Chip icon="call-split" label={isolate ? "격리 켬" : "격리"} selected={isolate} onPress={() => setIsolate((v) => !v)} />
+            // 라벨·굵기를 고정해 켬·끔의 폭이 같다 — 눌러도 다음 칩이 줄을 바꾸지 않게. 켬은 아이콘·색으로만
+            <Chip icon={isolate ? "check" : "call-split"} selected={isolate} onPress={() => setIsolate((v) => !v)}>
+              <Text style={[styles.chipText, { color: isolate ? t.accent : t.text }]} numberOfLines={1}>격리</Text>
+            </Chip>
           ) : null}
           <Chip trailingIcon="arrow-drop-down" onPress={pickMode} disabled={running}>
             <Text style={styles.chipText}>
@@ -1275,7 +1312,7 @@ export default function Chat() {
         </View>
       </KeyboardStickyView>
       <ChoiceSheet state={sheet} onClose={() => setSheet(null)} />
-      <GitSheet pc={pc} project={project} session={sid} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
+      <GitSheet pc={pc} project={project} session={sid} branch={wt?.branch} visible={gitOpen} onClose={() => setGitOpen(false)} onCommitted={() => fetchDiff(pc)} />
       <TextSelectModal text={selectText} onClose={() => setSelectText(null)} onCopyAll={copyText} />
     </View>
   );
@@ -1311,8 +1348,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingVertical: space.xs,
     backgroundColor: t.accentSoft,
   },
-  wtText: { flex: 1, fontSize: font.size.sm, color: t.accent, fontWeight: font.weight.bold },
+  wtText: { flex: 1, fontSize: font.size.sm, color: t.text, fontWeight: font.weight.bold },
+  channelBar: { backgroundColor: t.successSoft },
   resumeBar: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    borderRadius: radius.pill,
+    boxShadow: t.shadowCard,
     paddingLeft: space.lg,
     paddingRight: space.xs,
     backgroundColor: t.surface,
@@ -1382,32 +1424,43 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     minWidth: TOUCH,
     minHeight: TOUCH,
     justifyContent: "center",
-    borderRadius: radius.lg,
-    borderBottomRightRadius: space.xs,
+    borderRadius: radius.md,
+    borderBottomRightRadius: radius.tail,
+    boxShadow: t.shadowCard,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
     maxWidth: "85%",
   },
   assistantBubble: {
-    alignSelf: "flex-start",
+    flexShrink: 1,
     backgroundColor: t.bubbleBot,
     minWidth: TOUCH,
     minHeight: TOUCH,
     justifyContent: "center",
-    borderRadius: radius.lg,
-    borderBottomLeftRadius: space.xs,
+    borderRadius: radius.md,
+    borderBottomLeftRadius: radius.tail,
+    boxShadow: t.shadowCard,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    maxWidth: "85%",
+  },
+  // Claude 아바타 + 말풍선 — 아바타는 말풍선 아래 끝(꼬리 쪽)에 붙는다
+  botRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
+    alignSelf: "flex-start",
+    maxWidth: "92%",
   },
   userText: {
     fontSize: font.size.body,
-    lineHeight: 22,
-    color: t.text,
+    lineHeight: font.lineHeight.body,
+    color: t.onBubbleUser,
   },
+  // 아바타 폭만큼 들여 Claude 말풍선과 같은 선에
   toolOnlyRow: {
     alignSelf: "flex-start",
     maxWidth: "85%",
+    marginLeft: BOT_AVATAR + space.sm,
   },
   toolButton: {
     flexDirection: "row",
@@ -1417,9 +1470,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     height: 28,
     paddingHorizontal: space.sm,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
     backgroundColor: t.surface,
+    boxShadow: t.shadowCard,
     marginBottom: space.xs,
   },
   toolButtonText: {
@@ -1441,6 +1493,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
     paddingVertical: space.sm,
+    paddingLeft: BOT_AVATAR + space.sm,
   },
   runningText: {
     fontSize: font.size.sm,
@@ -1567,16 +1620,19 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     width: TOUCH,
     height: TOUCH,
     borderRadius: TOUCH / 2,
-    backgroundColor: t.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: t.border,
+    backgroundColor: t.surface,
+    boxShadow: t.shadowRaised,
     alignItems: "center",
     justifyContent: "center",
   },
+  // 키보드가 열리면 리스트 위에 겹쳐 뜬다 — 권한 카드 좌우 여백으로 뒤 메시지가 비치지 않게 바탕을 칠한다
+  sticky: { backgroundColor: t.bg },
   permCard: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
-    backgroundColor: t.surface,
+    marginHorizontal: space.md,
+    marginBottom: space.sm,
+    borderRadius: radius.lg,
+    boxShadow: t.shadowRaised,
+    backgroundColor: t.elevated,
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
     gap: space.sm,
@@ -1644,10 +1700,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
   permReason: {
     minHeight: TOUCH,
     paddingHorizontal: space.md,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.pill,
+    borderWidth: 1,
     borderColor: t.inputBorder,
-    backgroundColor: t.bg,
+    backgroundColor: t.surface,
     fontSize: font.size.sm,
     color: t.text,
   },
@@ -1658,8 +1714,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     gap: space.sm,
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
     backgroundColor: t.bg,
   },
   chipText: {
@@ -1700,8 +1754,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.sm,
     gap: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: t.border,
     // 키보드가 열리면 입력바가 리스트 위에 겹쳐 뜨므로, 투명하면 뒤의 변경 목록이 비쳐 컨트롤과 뭉개진다
     backgroundColor: t.bg,
   },
@@ -1745,7 +1797,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
     paddingBottom: space.md,
     borderRadius: TOUCH / 2,
     backgroundColor: t.surface,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     borderColor: t.inputBorder,
     fontSize: font.size.md,
     color: t.text,
