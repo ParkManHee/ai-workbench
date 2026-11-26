@@ -1254,7 +1254,7 @@ export default function Chat() {
           ) : null}
           {/* 모델·effort·권한은 각자 다른 시트를 여는 별개 버튼 — 칩으로 경계를 보이고, planRow 밖에 두어 좁은 폭에서 칩 단위로 줄바꿈 */}
           {!channel ? <Chip label={model || "모델"} selected={!!model} trailingIcon="arrow-drop-down" onPress={pickModel} /> : null}
-          <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} />
+          {!channel ? <Chip label={effort || "추론 강도"} selected={!!effort} trailingIcon="arrow-drop-down" onPress={pickEffort} /> : null}
           {canIsolate ? (
             // 라벨·굵기를 고정해 켬·끔의 폭이 같다 — 눌러도 다음 칩이 줄을 바꾸지 않게. 켬은 아이콘·색으로만
             <Chip icon={isolate ? "check" : "call-split"} selected={isolate} onPress={() => setIsolate((v) => !v)}>
