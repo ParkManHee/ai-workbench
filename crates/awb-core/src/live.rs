@@ -68,6 +68,16 @@ pub fn find_live(session_id: &str) -> Option<LiveEntry> {
     find_live_in(&sessions_dir(), session_id, proc_lstart)
 }
 
+/// 레지스트리 항목과 그 파일의 수정시각(초) — 읽기만 하고 ps 는 띄우지 않는다. 살아 있는지는 live_interactive_ids 로 거른다.
+pub fn registry() -> Vec<(LiveEntry, u64)> {
+    let Ok(entries) = std::fs::read_dir(sessions_dir()) else { return vec![] };
+    entries.flatten().filter_map(|e| {
+        let ent = parse_entry(&std::fs::read_to_string(e.path()).ok()?)?;
+        let t = e.metadata().and_then(|m| m.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+        Some((ent, t))
+    }).collect()
+}
+
 /// 레지스트리 cwd 와 프로젝트 경로 비교 — `~`·끝 슬래시·심링크(프로젝트 경로는 realpath) 차이를 흡수한다.
 pub fn same_dir(a: &str, b: &str) -> bool {
     let norm = |p: &str| {

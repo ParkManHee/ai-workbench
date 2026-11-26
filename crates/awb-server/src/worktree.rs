@@ -4,7 +4,7 @@
 // 원래 프로젝트 이름으로 이 세션을 찾도록 트리·세션 매핑을 여기 한 곳에 둔다.
 use crate::routes::AppState;
 use crate::sessions::{filter_rows, SessionRow};
-use awb_core::transcript::{list_open_sessions_in, project_slug, transcript_path};
+use awb_core::transcript::{fresh_live_sessions, list_open_sessions_in, project_slug, transcript_path};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -155,10 +155,13 @@ pub fn note(st: &AppState, meta: &crate::runreg::RunMeta, sid: &str) {
 /// 프로젝트의 세션 목록 — 원래 트리와 이 프로젝트 격리 트리들의 트랜스크립트 폴더를 합친다.
 /// /sessions·/projects·/needs-you 가 모두 이것을 쓴다.
 pub fn project_sessions(st: &AppState, project: &str, repo: &str, tx_root: &str, live_ids: &HashSet<String>, q: Option<&str>, archived: bool) -> Vec<SessionRow> {
-    let mut list = list_open_sessions_in(&format!("{tx_root}/{}", project_slug(repo)), live_ids);
+    // 대화 파일이 아직 없는 새 터미널 세션도 행으로 — 폰에서 첫 메시지를 보낼 수 있게
+    let reg = awb_core::live::registry();
+    let open = |dir: &str| { let mut l = list_open_sessions_in(&format!("{tx_root}/{}", project_slug(dir)), live_ids); let f = fresh_live_sessions(&reg, live_ids, dir, &l); l.extend(f); l };
+    let mut list = open(repo);
     let mut owner: HashMap<String, Worktree> = HashMap::new();
     for wt in store(st).for_project(project) {
-        for s in list_open_sessions_in(&format!("{tx_root}/{}", project_slug(&wt.path)), live_ids) {
+        for s in open(&wt.path) {
             owner.insert(s.session_id.clone(), wt.clone());
             list.push(s);
         }

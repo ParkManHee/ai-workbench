@@ -362,9 +362,29 @@ fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, open_onl
     out
 }
 
+/// 터미널에 막 띄워 대화 파일이 아직 없는 세션 행 — claude 는 첫 메시지를 주고받은 뒤에야 jsonl 을 만들어서,
+/// 그 사이 앱 목록에 없으면 폰에서 첫 메시지를 보낼 수 없다. live_ids 로 살아 있는 것만, cwd 로 이 폴더 것만 고른다.
+pub fn fresh_live_sessions(reg: &[(crate::live::LiveEntry, u64)], live_ids: &std::collections::HashSet<String>, cwd: &str, listed: &[SessionInfo]) -> Vec<SessionInfo> {
+    reg.iter().filter(|(e, _)| live_ids.contains(&e.session_id) && safe_session_id(&e.session_id)
+        && e.cwd.as_deref().is_some_and(|c| crate::live::same_dir(c, cwd))
+        && !listed.iter().any(|s| s.session_id == e.session_id))
+        .map(|(e, t)| SessionInfo { session_id: e.session_id.clone(), updated: *t, preview: String::new(), answer_preview: String::new(), count: 0, active: false, waiting: false, live: true, app: false })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_live_sessions_lists_live_terminal_without_transcript() {
+        let ent = |sid: &str, cwd: &str| (crate::live::LiveEntry { pid: 1, session_id: sid.into(), proc_start: "x".into(), cwd: Some(cwd.into()) }, 7);
+        let reg = vec![ent("new-1", "/nx/repo"), ent("has-tx", "/nx/repo"), ent("dead", "/nx/repo"), ent("other", "/nx/other")];
+        let live: std::collections::HashSet<String> = ["new-1", "has-tx", "other"].iter().map(|s| s.to_string()).collect();
+        let listed = vec![SessionInfo { session_id: "has-tx".into(), updated: 9, preview: "p".into(), answer_preview: String::new(), count: 2, active: false, waiting: false, live: true, app: false }];
+        let got: Vec<(String, u64, bool)> = fresh_live_sessions(&reg, &live, "/nx/repo/", &listed).into_iter().map(|s| (s.session_id, s.updated, s.live)).collect();
+        assert_eq!(got, vec![("new-1".to_string(), 7, true)], "대화 파일 있는 세션·죽은 세션·다른 폴더 세션은 빼고 새 터미널 세션만");
+    }
     #[test]
     fn slug_matches_claude_convention() {
         assert_eq!(project_slug("/Users/mh/github/ai-workbench"), "-Users-mh-github-ai-workbench");
