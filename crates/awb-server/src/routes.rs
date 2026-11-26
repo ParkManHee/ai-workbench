@@ -359,10 +359,13 @@ const PERM_INPUT_MAX_CHARS: usize = 20_000;
 const PERM_PUSH_MAX_CHARS: usize = 300;
 
 /// (앱에 줄 입력, 푸시 본문) — 넘치면 문자 경계에서 자르고 「…」 를 붙인다.
+/// 알림 본문은 JSON 대신 이 키들 중 처음 있는 문자열 값(명령·파일 경로…)으로 쓴다.
+const PERM_PUSH_KEYS: &[&str] = &["command", "file_path", "notebook_path", "path", "url", "pattern", "query", "description", "plan", "prompt"];
 fn perm_summaries(input: &serde_json::Value) -> (String, String) {
     let raw = input.to_string();
-    let cut = |max| match crate::streamevt::truncate_chars(&raw, max) { (t, true) => format!("{t}…"), (t, false) => t };
-    (cut(PERM_INPUT_MAX_CHARS), cut(PERM_PUSH_MAX_CHARS))
+    let push = PERM_PUSH_KEYS.iter().find_map(|k| input.get(*k).and_then(|v| v.as_str())).unwrap_or(&raw);
+    let cut = |s: &str, max| match crate::streamevt::truncate_chars(s, max) { (t, true) => format!("{t}…"), (t, false) => t };
+    (cut(&raw, PERM_INPUT_MAX_CHARS), cut(push, PERM_PUSH_MAX_CHARS))
 }
 
 /// MCP 릴레이가 호출(내부 시크릿 인증). 폰 응답까지 대기(최대 300초) 후 allow/deny 반환.
@@ -828,6 +831,10 @@ mod tests {
         assert!(push.ends_with('…') && push.chars().count() == PERM_PUSH_MAX_CHARS + 1);
         let (huge, _) = perm_summaries(&serde_json::json!({ "plan": "가".repeat(PERM_INPUT_MAX_CHARS) }));
         assert!(huge.ends_with('…') && huge.chars().count() == PERM_INPUT_MAX_CHARS + 1);
+        let (_, bash) = perm_summaries(&serde_json::json!({ "command": "git push", "description": "푸시" }));
+        assert_eq!(bash, "git push");
+        let (_, other) = perm_summaries(&serde_json::json!({ "n": 1 }));
+        assert_eq!(other, r#"{"n":1}"#);
     }
 
     #[tokio::test]

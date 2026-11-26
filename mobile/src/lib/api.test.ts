@@ -5,7 +5,10 @@ describe("url builders", () => {
     expect(streamUrl("http://1.2.3.4:8787", "r1", 0, "tok"))
       .toBe("ws://1.2.3.4:8787/stream/r1?offset=0&token=tok");
   });
-  it("pairUrl", () => { expect(pairUrl("http://1.2.3.4:8787","AB")).toBe("http://1.2.3.4:8787/pair?code=AB"); });
+  it("pairUrl", () => {
+    expect(pairUrl("http://1.2.3.4:8787","AB")).toBe("http://1.2.3.4:8787/pair?code=AB");
+    expect(pairUrl("http://1.2.3.4:8787","AB","SM S918N")).toBe("http://1.2.3.4:8787/pair?code=AB&label=SM%20S918N");
+  });
   it("client.chat posts to /chat/:project", async () => {
     const calls: any[] = [];
     const fetchMock = async (url: string, init: any) => { calls.push([url, init]); return { ok: true, json: async () => ({ run_id: "r1", log: "l" }) }; };

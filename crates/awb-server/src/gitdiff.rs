@@ -29,6 +29,12 @@ pub fn summarize(workdir: &str) -> DiffSummary {
             }
         }
     }
+    // git diff 는 미추적 파일을 세지 않는다 — 새 파일의 줄 수를 더한다(이진 파일은 numstat 처럼 뺀다)
+    for f in run(&["-C", workdir, "ls-files", "--others", "--exclude-standard"]).lines() {
+        let Ok(b) = std::fs::read(std::path::Path::new(workdir).join(f)) else { continue };
+        if b.contains(&0) { continue; }
+        ins += (b.iter().filter(|&&c| c == b'\n').count() + usize::from(!b.is_empty() && !b.ends_with(b"\n"))) as u32;
+    }
     DiffSummary { files: entries.len() as u32, insertions: ins, deletions: del, entries }
 }
 
@@ -251,5 +257,8 @@ mod tests {
         let s = summarize(w);
         assert!(s.files >= 1);                        // 미추적 a.txt 포함
         assert!(s.entries.iter().any(|e| e.path == "a.txt"));
+        std::fs::create_dir_all(wd.join("d")).unwrap();
+        std::fs::write(wd.join("d/b.txt"), "1\n2\n3").unwrap();
+        assert_eq!(summarize(w).insertions, 4, "미추적 a.txt 1줄 + d/b.txt 3줄");
     }
 }

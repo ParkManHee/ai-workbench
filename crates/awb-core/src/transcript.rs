@@ -169,9 +169,18 @@ pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usi
             msgs.push(m);
         }
     }
-    let active = fs::metadata(path).and_then(|m| m.modified()).ok()
+    (msgs, lines.len(), is_active(path, &vals))
+}
+
+/// 작업 중 — 90초 안에 쓰였고 마지막 대화 기록이 턴 종료(system turn_duration)가 아니다.
+/// 수정 시각만 보면 응답이 끝난 세션도 90초 동안 작업 중으로 남는다.
+fn is_active(path: &str, vals: &[Option<Value>]) -> bool {
+    let recent = fs::metadata(path).and_then(|m| m.modified()).ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| now().saturating_sub(d.as_secs()) <= 90).unwrap_or(false);
-    (msgs, lines.len(), active)
+    let ended = vals.iter().rev().flatten()
+        .find(|v| matches!(v.get("type").and_then(|t| t.as_str()), Some("user" | "assistant" | "system")))
+        .is_some_and(|v| v.get("subtype").and_then(|s| s.as_str()) == Some("turn_duration"));
+    recent && !ended
 }
 
 /// epoch초 → "YYYY-MM-DDTHH:MM:SS"(UTC) — 트랜스크립트 timestamp(ISO8601)와 사전순 비교용.
@@ -218,8 +227,7 @@ pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail
             all.push((i, ts, m));
         }
     }
-    let active = fs::metadata(path).and_then(|m| m.modified()).ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| now().saturating_sub(d.as_secs()) <= 90).unwrap_or(false);
+    let active = is_active(path, &vals);
     let taken: Vec<&(usize, String, TranscriptMsg)> = match until {
         Some(u) => {
             let cands: Vec<&_> = all.iter().filter(|(i, _, _)| *i < u).collect();
@@ -415,6 +423,17 @@ mod tests {
         assert_eq!(msgs2.len(), 1);
         assert_eq!(msgs2[0].text, "쓰는중이던말");
         assert_eq!(next2, 2);
+    }
+    #[test]
+    fn ended_turn_is_not_active() {
+        let dir = std::env::temp_dir().join("awb_tx_ended"); std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("s.jsonl");
+        let ans = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"답\"}}\n";
+        std::fs::write(&f, ans).unwrap();
+        assert!(read_transcript(f.to_str().unwrap(), 0).2, "방금 쓴 진행 중 턴은 작업 중");
+        std::fs::write(&f, format!("{ans}{{\"type\":\"system\",\"subtype\":\"turn_duration\"}}\n{{\"type\":\"cost-state\"}}\n")).unwrap();
+        assert!(!read_transcript(f.to_str().unwrap(), 0).2, "턴 종료 뒤엔 방금 썼어도 작업 중 아님");
+        assert!(!read_transcript_page(f.to_str().unwrap(), None, 50, 3600).active);
     }
     #[test]
     fn epoch_to_iso_known_values() {

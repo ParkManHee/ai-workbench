@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import { router } from "expo-router";
 import { parseManualPair, parsePairPayload } from "../src/lib/pairing";
@@ -9,12 +9,15 @@ import { addPC } from "../src/store/pcs";
 import { font, media, radius, space, TOUCH, useTheme, type Theme } from "../src/lib/theme";
 import { Button, Icon, keepWords, SheetFrame } from "../src/components/ui";
 
+/** PC 의 기기 목록에 보일 이름 — 안드로이드 기종명(iOS 는 없어 서버가 mobile 로 둔다) */
+const deviceModel = (): string | undefined => (Platform.constants as { Model?: string }).Model;
+
 /** 스캔·손입력이 함께 타는 페어링 — 실패하면 원인 문구, 성공하면 null. again: 그 경로에서 다시 하는 법 */
 async function pairWithPc(parsed: { baseUrl: string; code: string }, again: string): Promise<string | null> {
   try {
     let res: Response;
     try {
-      res = await fetch(pairUrl(parsed.baseUrl, parsed.code));
+      res = await fetch(pairUrl(parsed.baseUrl, parsed.code, deviceModel()));
     } catch {
       return "PC에 연결하지 못했습니다. PC가 켜져 있고 같은 네트워크(Tailscale)에 있는지 확인해 주세요.";
     }

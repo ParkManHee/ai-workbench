@@ -45,7 +45,13 @@ use axum::{extract::{State, Query}, http::StatusCode, Json};
 use crate::routes::AppState;
 
 #[derive(serde::Deserialize)]
-pub struct PairQuery { pub code: String }
+pub struct PairQuery { pub code: String, pub label: Option<String> }
+
+/// 기기 목록에 보일 이름 — 앱이 보낸 기종 이름(40자까지), 안 보낸 옛 앱은 mobile.
+fn device_label(label: Option<&str>) -> String {
+    let l: String = label.unwrap_or("").trim().chars().filter(|c| !c.is_control()).take(40).collect();
+    if l.is_empty() { "mobile".into() } else { l }
+}
 
 #[derive(Serialize)]
 pub struct PairResult { pub token: String, pub device_id: String }
@@ -63,7 +69,7 @@ pub async fn pair_handler(
     };
     if !valid { return Err(StatusCode::FORBIDDEN); }
     let token = random_token();
-    let dev = st.devices.add(&token, "mobile");
+    let dev = st.devices.add(&token, &device_label(q.label.as_deref()));
     Ok(Json(PairResult { token, device_id: dev.id }))
 }
 
@@ -77,6 +83,12 @@ mod tests {
         assert!(pc.is_valid("ABC234", 1000));
         assert!(!pc.is_valid("ABC234", 1001));   // 만료
         assert!(!pc.is_valid("WRONG1", 999));     // 코드 불일치
+    }
+    #[test]
+    fn device_label_uses_sent_model() {
+        assert_eq!(device_label(Some(" SM-S918N ")), "SM-S918N");
+        assert_eq!(device_label(None), "mobile");
+        assert_eq!(device_label(Some("  ")), "mobile");
     }
     #[test]
     fn token_is_64_hex_chars() {

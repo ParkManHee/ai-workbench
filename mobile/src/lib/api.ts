@@ -17,7 +17,9 @@ export function isUnauthorized(e: unknown): boolean {
 /** 이 앱이 아는 데몬 프로토콜 버전 — /info.api_version과 다르면 업데이트 배너. */
 export const EXPECTED_API_VERSION = 2;
 
-export function pairUrl(baseUrl: string, code: string) { return `${baseUrl}/pair?code=${encodeURIComponent(code)}`; }
+export function pairUrl(baseUrl: string, code: string, label?: string) {
+  return `${baseUrl}/pair?code=${encodeURIComponent(code)}${label ? `&label=${encodeURIComponent(label)}` : ""}`;
+}
 export function streamUrl(baseUrl: string, runId: string, offset: number, token: string) {
   const ws = baseUrl.replace(/^http/, "ws");
   return `${ws}/stream/${runId}?offset=${offset}&token=${encodeURIComponent(token)}`;
