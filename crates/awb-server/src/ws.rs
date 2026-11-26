@@ -73,6 +73,7 @@ async fn stream_loop(
     let _attached = Attached(st.runs.clone(), run_id.clone());
     let mut pending = String::new();
     let mut session_id: Option<String> = None;
+    let mut task_ids = Vec::new();
     // keepalive: 폰 절전/NAT가 유휴 연결을 끊지 않도록 주기적으로 ping 프레임 전송
     // (OkHttp/브라우저가 pong을 자동 응답하므로 클라이언트 코드는 무관여).
     const PING_EVERY_SECS: u64 = 20;
@@ -91,7 +92,7 @@ async fn stream_loop(
                     crate::worktree::note(&st, &meta, &sid);
                     session_id = Some(sid);
                 }
-                if let Some(ev) = crate::streamevt::parse_line(&line) {
+                for ev in crate::streamevt::parse_line(&line).into_iter().chain(crate::streamevt::task_todos_event(&line, &mut task_ids)) {
                     if socket
                         .send(Message::Text(serde_json::to_string(&ev).unwrap().into()))
                         .await

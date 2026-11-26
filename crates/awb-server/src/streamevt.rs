@@ -12,6 +12,8 @@ pub enum Event {
     /// session_id: 이 실행이 쓴 세션(fork 되면 새 ID) — 앱이 이후 전송·트랜스크립트를 이 ID 로 바꾼다
     Done { exit: Option<i32>, verdict: String, changed_files: u32, session_id: Option<String> },
     Error { message: String },
+    /// 실행 중 할 일 바 — Task* 결과 줄 직후의 세션 목록(끝난 뒤 /transcript todos 와 같은 출처·형식)
+    Todos { todos: Vec<String> },
 }
 
 /// 문자(char) 경계를 지켜 최대 `max_chars`개 문자로 잘라 UTF-8 패닉을 방지한다.
@@ -98,6 +100,25 @@ fn progress_in(text: &str, tasks_root: &str) -> Option<Progress> {
         todo = Some((t.iter().filter(|x| x.starts_with('✔')).count(), t.len()));
     }
     step.map(|step| Progress { step, todo })
+}
+
+/// Task* 결과 줄이면 그 시점 세션 목록 — 호출 줄은 도구 실행 전이라 한 박자 늦고, 결과 줄엔 도구 이름이 없어 호출 id 를 모아 둔다
+pub fn task_todos_event(line: &str, task_ids: &mut Vec<String>) -> Option<Event> {
+    task_todos_in(line, task_ids, &awb_core::transcript::tasks_root())
+}
+fn task_todos_in(line: &str, task_ids: &mut Vec<String>, tasks_root: &str) -> Option<Event> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let mut hit = false;
+    for i in v.get("message")?.get("content")?.as_array()? {
+        let id = |k| i.get(k).and_then(|x| x.as_str());
+        match id("type") {
+            Some("tool_use") if awb_core::transcript::TASK_TOOLS.contains(&id("name").unwrap_or("")) => task_ids.extend(id("id").map(String::from)),
+            Some("tool_result") => hit |= id("tool_use_id").is_some_and(|r| task_ids.iter().any(|t| t == r)),
+            _ => {}
+        }
+    }
+    let sid = v.get("session_id").and_then(|s| s.as_str()).filter(|_| hit)?;
+    Some(Event::Todos { todos: awb_core::transcript::task_todos(&std::path::Path::new(tasks_root).join(sid)) })
 }
 
 pub fn parse_line(line: &str) -> Option<Event> {
@@ -217,5 +238,23 @@ mod tests {
             r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01HRhe2cTruYPjpZrb7Tjm7q","name":"TaskList","input":{}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
         );
         assert_eq!(progress_in(log, root.to_str().unwrap()), Some(Progress { step: "TaskList".into(), todo: Some((3, 4)) }));
+    }
+    #[test]
+    fn task_result_line_carries_session_task_list() {
+        // 2026-11-26 실측 스트림(claude -p stream-json): 결과 줄엔 도구 이름 없이 tool_use_id·session_id 만 있다
+        let root = std::env::temp_dir().join("awb_se_todos");
+        let dir = root.join("7c789088-1099-4d82-bd33-4f88cde13e4f");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let call = r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_016twyuFX9p6g1YATkLWKYVz","name":"TaskCreate","input":{"subject":"수박 세기","description":"수박 세기"}}]},"session_id":"7c789088-1099-4d82-bd33-4f88cde13e4f"}"##;
+        let result = r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_016twyuFX9p6g1YATkLWKYVz","type":"tool_result","content":"Task #1 created successfully: 수박 세기"}]},"parent_tool_use_id":null,"session_id":"7c789088-1099-4d82-bd33-4f88cde13e4f","tool_use_result":{"task":{"id":"1","subject":"수박 세기","description":"수박 세기"}}}"##;
+        let mut ids = Vec::new();
+        assert!(task_todos_in(call, &mut ids, root.to_str().unwrap()).is_none()); // 호출 줄에선 아직 안 싣는다
+        // 도구가 결과 줄 전에 파일을 쓴다 — 결과 줄을 읽는 시점의 목록이 실린다
+        std::fs::write(dir.join("1.json"), r#"{"id":"1","subject":"수박 세기","description":"수박 세기","status":"in_progress","blocks":[],"blockedBy":[]}"#).unwrap();
+        match task_todos_in(result, &mut ids, root.to_str().unwrap()) {
+            Some(Event::Todos { todos }) => assert_eq!(todos, vec!["▶ 수박 세기".to_string()]),
+            other => panic!("expected Todos, got {other:?}"),
+        }
     }
 }

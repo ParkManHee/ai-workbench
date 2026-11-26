@@ -21,6 +21,8 @@ export function reduceEvent(state: ChatState, ev: WsEvent): ChatState {
     case "tool_use": { const m = ensureAssistant(); m.tools!.push(ev.name); (m.toolDetails ??= []).push(ev.summary ? `${ev.name}: ${ev.summary}` : ev.name); break; }
     case "done": { s.running = false; s.verdict = ev.verdict; s.changedFiles = ev.changed_files; break; }
     case "error": { s.error = ev.message; s.running = false; break; }
+    // 실행 중 할 일 바 — 바는 todos 가 있는 마지막 메시지를 그리므로 지금 말풍선에 싣는다
+    case "todos": { s.messages[s.messages.length - 1] = { ...ensureAssistant(), todos: ev.todos }; break; }
   }
   return s;
 }

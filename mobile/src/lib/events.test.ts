@@ -12,6 +12,12 @@ describe("reduceEvent", () => {
     let s = reduceEvent(initialChatState(), { kind: "done", exit: 0, verdict: "success", changed_files: 2 });
     expect(s.running).toBe(false); expect(s.verdict).toBe("success");
   });
+  it("todos 이벤트는 실행 중 말풍선의 목록을 바꾸고 이후 도구 이벤트에도 남는다", () => {
+    let s = reduceEvent(initialChatState(), { kind: "tool_use", name: "TaskUpdate", summary: "" });
+    s = reduceEvent(s, { kind: "todos", todos: ["✔ 사과", "▶ 배"] });
+    s = reduceEvent(s, { kind: "tool_use", name: "Bash", summary: "ls" });
+    expect(s.messages.at(-1)?.todos).toEqual(["✔ 사과", "▶ 배"]);
+  });
 });
 describe("verdictLabel", () => {
   it("labels", () => {
