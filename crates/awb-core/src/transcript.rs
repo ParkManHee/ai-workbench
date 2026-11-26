@@ -106,7 +106,7 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>, V
 }
 
 /// 하네스가 user 라인/큐에 주입하는 시스템 텍스트 프리픽스 — 사용자 입력이 아니므로 표시하지 않는다.
-const NOISE_PREFIXES: &[&str] = &["<task-notification>", "<command-name>", "<command-message>", "<command-args>", "<local-command", "<system-reminder>"];
+const NOISE_PREFIXES: &[&str] = &["<task-notification>", "<command-name>", "<command-message>", "<command-args>", "<local-command", "<system-reminder>", "<event "];
 fn is_noise_text(s: &str) -> bool {
     let t = s.trim_start();
     NOISE_PREFIXES.iter().any(|p| t.starts_with(p))
@@ -448,6 +448,8 @@ mod tests {
             "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-07-08T10:00:01.000Z\"}\n",
             // 시스템이 큐에 넣는 task-notification은 표시하면 안 됨
             "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:02.000Z\",\"content\":\"<task-notification>\\n<task-id>x</task-id>\"}\n",
+            // REPL 모드 도구 결과도 큐로 들어온다 — 사용자 말풍선이 아니다
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:02.500Z\",\"content\":\"<event kind=\\\"repl-eval\\\" eval=\\\"1\\\">\\n<result>x</result>\"}\n",
             // 턴 종료 후 dequeue된 메시지는 실제 user 라인으로 재기록 → 중복 표시 금지
             "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-07-08T10:00:03.000Z\",\"content\":\"턴 끝나고 전달된 메시지\"}\n",
             "{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-07-08T10:00:04.000Z\"}\n",
@@ -460,7 +462,7 @@ mod tests {
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[1].role, "user");
         // 페이지 경로도 동일 규칙
-        let p = read_transcript_page(f.to_str().unwrap(), Some(7), 50, 3600);
+        let p = read_transcript_page(f.to_str().unwrap(), Some(8), 50, 3600);
         let ptexts: Vec<&str> = p.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(ptexts, vec!["작업 중에 입력한 메시지", "턴 끝나고 전달된 메시지", "답변"]);
     }
