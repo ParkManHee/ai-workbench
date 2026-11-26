@@ -13,6 +13,8 @@ pub struct LiveEntry { pub pid: u32, pub session_id: String, pub proc_start: Str
 pub fn parse_entry(json: &str) -> Option<LiveEntry> {
     let v: Value = serde_json::from_str(json).ok()?;
     if v.get("kind")?.as_str()? != "interactive" { return None; }
+    // 데몬이 띄운 claude -p 도 kind=interactive 로 등록된다(2026-11-26 실측) — entrypoint 가 sdk-cli 면 터미널이 아니다
+    if v.get("entrypoint").and_then(|e| e.as_str()) == Some("sdk-cli") { return None; }
     let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
     Some(LiveEntry {
         pid,
@@ -149,6 +151,18 @@ mod tests {
         assert_eq!((a.pid, a.cwd.as_deref()), (111, Some("/p/a")));
         assert_eq!(find_live_in(&d, "sid-b", fake_lstart), None);
         assert_eq!(live_ids_in(&d, fake_lstart), HashSet::from(["sid-a".to_string()]));
+    }
+
+    // 실측한 레지스트리(claude 2.1.332): 터미널은 entrypoint=cli, 데몬이 띄운 claude -p 는 sdk-cli
+    const TERM: &str = r#"{"pid":111,"sessionId":"sid-a","cwd":"/p/a","procStart":"Wed Oct  7 10:00:00 2026","kind":"interactive","entrypoint":"cli","status":"idle"}"#;
+    const DAEMON: &str = r#"{"pid":222,"sessionId":"sid-b","cwd":"/p/b","procStart":"Wed Oct  7 11:00:00 2026","kind":"interactive","entrypoint":"sdk-cli","status":"busy"}"#;
+
+    #[test]
+    fn daemon_run_registry_entry_is_not_live_but_terminal_is() {
+        assert_eq!(parse_entry(DAEMON), None);
+        assert_eq!(parse_entry(TERM).map(|e| e.pid), Some(111));
+        // entrypoint 가 없는 항목(옛 형식)은 지금처럼 터미널로 본다
+        assert_eq!(parse_entry(A).map(|e| e.pid), Some(111));
     }
 
     #[test]
