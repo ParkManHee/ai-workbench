@@ -53,14 +53,17 @@ export default function Sessions() {
   }, [query]);
 
   const load = useCallback(
-    async (p: PC, isRefresh: boolean) => {
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
-      setError(null);
+    async (p: PC, isRefresh: boolean, silent = false) => {
+      if (!silent) {
+        if (isRefresh) setRefreshing(true);
+        else setLoading(true);
+        setError(null);
+      }
       try {
         const list = await makeClient(p.baseUrl, p.token).sessions(project, { q, archived: showArchived });
         setSessions(list);
       } catch (e) {
+        if (silent) return; // 주기 조회 실패는 화면을 오류로 바꾸지 않고 다음 주기에 맡긴다
         if (isUnauthorized(e)) {
           // Token revoked/invalid → drop this PC and send the user back to the PC list.
           await removePC(p.id);
@@ -69,6 +72,7 @@ export default function Sessions() {
         }
         setError("세션을 불러오지 못했습니다. 다시 시도해 주세요.");
       } finally {
+        if (silent) return;
         if (isRefresh) setRefreshing(false);
         else setLoading(false);
       }
@@ -107,6 +111,16 @@ export default function Sessions() {
       if (focusedRef.current) reloadRef.current();
       focusedRef.current = true;
     }, [])
+  );
+
+  // 작업 중 세션이 있는 동안만, 화면이 보일 때만 10초마다 조용히 재조회 — 열어 둔 채로도 끝난 세션의 「작업 중」 이 풀린다
+  const hasActive = sessions.some(isActive);
+  useFocusEffect(
+    useCallback(() => {
+      if (!pc || !hasActive) return;
+      const iv = setInterval(() => load(pc, true, true), 10000);
+      return () => clearInterval(iv);
+    }, [pc, hasActive, load])
   );
 
   function handleRetry() {
