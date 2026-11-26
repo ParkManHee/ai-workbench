@@ -7,6 +7,8 @@ set timeout 10
 # 시스템 expect(Tcl 8.5)는 UTF-8 4바이트 글자(이모지)를 바이트별로 풀어 다시 인코딩해 「ð」 로 깨뜨린다 — 양쪽 채널을 바이트 그대로 통과시킨다
 fconfigure exp0 -encoding binary
 # bypass 를 shift+tab 순환에 넣는다 — 인자 없이 띄워도 빠지지 않게(시작 모드는 넘긴 인자대로)
+# 할 일 도구(TaskCreate 등)는 이 변수 없이는 대화형에서도 없다 — 앱 할 일 바가 터미널 세션 목록도 읽게 켠다
+set env(CLAUDE_CODE_ENABLE_TODO_TOOLS) 1
 spawn -noecho claude --dangerously-load-development-channels plugin:phone@awb --allow-dangerously-skip-permissions {*}$argv
 fconfigure $spawn_id -encoding binary
 # 창 크기를 claude 쪽 pty 로 넘긴다 — spawn 은 크기를 복사하지 않아 0x0 이면 claude 가 아무것도 그리지 않는다.

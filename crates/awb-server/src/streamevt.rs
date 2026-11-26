@@ -66,8 +66,12 @@ pub struct Progress {
 
 /// 로그 텍스트에서 현재 단계. parse_line 의 ToolUse 는 input 을 200자로 잘라 todos 를 못 읽으므로 따로 본다.
 pub fn latest_progress(text: &str) -> Option<Progress> {
+    progress_in(text, &awb_core::transcript::tasks_root())
+}
+fn progress_in(text: &str, tasks_root: &str) -> Option<Progress> {
     let mut step = None;
     let mut todo = None;
+    let mut task_sid = None;
     for l in text.lines().filter(|l| l.contains("\"tool_use\"")) {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
@@ -82,8 +86,16 @@ pub fn latest_progress(text: &str) -> Option<Progress> {
                     todo = Some((done, todos.len()));
                 }
             }
+            if awb_core::transcript::TASK_TOOLS.contains(&name) {
+                task_sid = v.get("session_id").and_then(|s| s.as_str()).map(String::from);
+            }
             step = Some(name.to_string());
         }
+    }
+    // Task* 는 입력에 목록이 없어 앱 할 일 바와 같은 출처(세션 목록 파일)로 센다
+    if let Some(sid) = task_sid {
+        let t = awb_core::transcript::task_todos(&std::path::Path::new(tasks_root).join(sid));
+        todo = Some((t.iter().filter(|x| x.starts_with('✔')).count(), t.len()));
     }
     step.map(|step| Progress { step, todo })
 }
@@ -183,5 +195,27 @@ mod tests {
             }
             other => panic!("expected ToolUse, got {other:?}"),
         }
+    }
+    #[test]
+    fn task_tools_progress_counts_session_task_files() {
+        // 2026-11-26 실측: resume 실행 로그엔 이번 턴의 #4·#5 만 있다 — 앞 턴 #1~#3 까지 세려면 세션 목록 파일을 본다
+        let root = std::env::temp_dir().join("awb_se_tasks");
+        let dir = root.join("55c8b0d2-5119-4c1f-a300-998ecb893558");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, t) in [
+            r#"{"id":"1","subject":"사과 세기","description":"사과 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"2","subject":"배 세기","description":"배 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"3","subject":"감 세기","description":"감 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"4","subject":"포도 송이 세기","description":"포도 세기","status":"in_progress","blocks":[],"blockedBy":[]}"#,
+        ].iter().enumerate() { std::fs::write(dir.join(format!("{}.json", i + 1)), t).unwrap(); }
+        let log = concat!(
+            r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01C8udNdTfSvzRX1icxaMQt2","name":"TaskCreate","input":{"subject":"포도 세기","description":"포도 세기"}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+            r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_015Z1Agxrp4SQyMjNwsp6qkT","name":"TaskCreate","input":{"subject":"귤 세기","description":"귤 세기"}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+            r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0196GwTaBZSP4cEwUVxdpm97","name":"TaskUpdate","input":{"taskId":"4","subject":"포도 송이 세기","status":"in_progress"}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+            r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01XypkjZyg96g3v5iFYLhU7z","name":"TaskUpdate","input":{"taskId":"5","status":"deleted"}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+            r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01HRhe2cTruYPjpZrb7Tjm7q","name":"TaskList","input":{}}]},"session_id":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        );
+        assert_eq!(progress_in(log, root.to_str().unwrap()), Some(Progress { step: "TaskList".into(), todo: Some((3, 4)) }));
     }
 }

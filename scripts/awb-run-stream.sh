@@ -21,6 +21,8 @@ elif [ -n "$MODE" ]; then set -- "$@" --permission-mode "$MODE"; fi
 [ -n "$RESUME" ] && set -- "$@" --resume "$RESUME"
 # 터미널에 열린 세션은 갈라서 새 ID 로 쓴다 — 같은 파일에 두 프로세스가 번갈아 쓰면 서로의 턴을 모른다
 [ -n "$RESUME" ] && [ "$FORK" = "1" ] && set -- "$@" --fork-session
+# 할 일 도구(TaskCreate 등)는 -p 에서 기본으로 꺼져 있다 — 앱 할 일 바·진행 알림이 그 목록을 읽는다
+export CLAUDE_CODE_ENABLE_TODO_TOOLS=1
 "$@" > "$LOG" 2>&1
 echo "$?" > "$LOG.done"
 exit

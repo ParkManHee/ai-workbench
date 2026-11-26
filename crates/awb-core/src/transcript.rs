@@ -1,6 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn project_slug(workdir: &str) -> String {
@@ -42,7 +43,7 @@ pub struct TranscriptMsg {
     /// AskUserQuestion의 선택지 라벨 — 앱이 탭 한 번으로 답할 수 있게 버튼으로 렌더
     #[serde(default)]
     pub options: Vec<String>,
-    /// TodoWrite의 작업 목록("✔/▶/· 내용") — 앱이 진행 카드로 렌더
+    /// TodoWrite·Task* 의 작업 목록("✔/▶/· 내용") — 앱이 진행 카드로 렌더
     #[serde(default)]
     pub todos: Vec<String>,
 }
@@ -52,6 +53,35 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars { return s.to_string(); }
     let t: String = s.chars().take(max_chars).collect();
     format!("{t}…")
+}
+
+fn todo_mark(status: &str) -> &'static str {
+    match status { "completed" => "✔", "in_progress" => "▶", _ => "·" }
+}
+
+/// Task* 도구(CLAUDE_CODE_ENABLE_TODO_TOOLS) — TodoWrite 와 달리 호출 입력에 전체 목록이 없고, resume 실행 로그엔 앞 턴 항목도 없다.
+/// claude 가 세션마다 쓰는 tasks/<세션>/<id>.json 이 현재 목록이다(삭제하면 파일이 지워지고 fork 는 새 목록, 2026-11-26 실측)
+pub const TASK_TOOLS: &[&str] = &["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+pub fn tasks_root() -> String { format!("{}/.claude/tasks", home()) }
+/// 세션 할 일 목록 — TodoWrite todos 와 같은 "✔/▶/· 제목" 형식, id 순
+pub fn task_todos(dir: &Path) -> Vec<String> {
+    let mut items: Vec<(u64, String)> = fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| {
+        let v: Value = serde_json::from_str(&fs::read_to_string(e.path()).ok()?).ok()?;
+        let id = v.get("id")?.as_str()?.parse().ok()?;
+        let subject = v.get("subject")?.as_str()?;
+        Some((id, format!("{} {subject}", todo_mark(v.get("status").and_then(|x| x.as_str()).unwrap_or("")))))
+    }).collect();
+    items.sort();
+    items.into_iter().map(|(_, s)| s).collect()
+}
+/// 마지막 Task* 메시지에 현재 목록을 싣는다 — 앱 할 일 바는 todos 가 있는 마지막 메시지를 그린다
+fn attach_task_todos<'a>(path: &str, msgs: impl DoubleEndedIterator<Item = &'a mut TranscriptMsg>) {
+    let Some(m) = msgs.rev().find(|m| m.tools.iter().any(|t| TASK_TOOLS.contains(&t.as_str()))) else { return };
+    // <claude>/projects/<slug>/<세션>.jsonl ↔ <claude>/tasks/<세션>/
+    let p = Path::new(path);
+    if let (Some(claude), Some(sid)) = (p.ancestors().nth(3), p.file_stem()) {
+        m.todos = task_todos(&claude.join("tasks").join(sid));
+    }
 }
 
 fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
@@ -85,9 +115,7 @@ fn parse_content(v: &Value) -> (String, Vec<String>, Vec<String>, Vec<String>, V
                             if let Some(items) = it.get("input").and_then(|i| i.get("todos")).and_then(|t| t.as_array()) {
                                 todos = items.iter().filter_map(|t| {
                                     let c = t.get("content").and_then(|x| x.as_str())?;
-                                    let mark = match t.get("status").and_then(|x| x.as_str()).unwrap_or("") {
-                                        "completed" => "✔", "in_progress" => "▶", _ => "·",
-                                    };
+                                    let mark = todo_mark(t.get("status").and_then(|x| x.as_str()).unwrap_or(""));
                                     Some(format!("{mark} {c}"))
                                 }).collect();
                             }
@@ -169,6 +197,7 @@ pub fn read_transcript(path: &str, from_line: usize) -> (Vec<TranscriptMsg>, usi
             msgs.push(m);
         }
     }
+    attach_task_todos(path, msgs.iter_mut());
     (msgs, lines.len(), is_active(path, &vals))
 }
 
@@ -230,6 +259,7 @@ pub fn read_transcript_page(path: &str, until: Option<usize>, limit: usize, tail
             all.push((i, ts, m));
         }
     }
+    attach_task_todos(path, all.iter_mut().map(|(_, _, m)| m));
     let active = is_active(path, &vals);
     let taken: Vec<&(usize, String, TranscriptMsg)> = match until {
         Some(u) => {
@@ -607,4 +637,52 @@ mod tests {
         assert_eq!(msgs[1].tool_details, vec!["Bash".to_string()]); // input 없으면 이름만
         assert_eq!(next, 3); // 3 lines consumed
     }
+    #[test]
+    fn task_tools_list_attached_to_last_task_message() {
+        // 2026-11-26 실측(claude 2.1.332 -p --resume): 앞 턴의 #1~#3 완료 뒤 #4 생성→제목·상태 변경, #5 생성→삭제(파일이 지워짐)
+        let claude = std::env::temp_dir().join("awb_tx_tasks/.claude");
+        let sid = "55c8b0d2-5119-4c1f-a300-998ecb893558";
+        let tasks = claude.join("tasks").join(sid);
+        let _ = std::fs::remove_dir_all(&tasks);
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::create_dir_all(claude.join("projects/p")).unwrap();
+        std::fs::write(tasks.join(".lock"), "").unwrap();
+        for (i, t) in TASK_FILES.iter().enumerate() { std::fs::write(tasks.join(format!("{}.json", i + 1)), t).unwrap(); }
+        let f = claude.join(format!("projects/p/{sid}.jsonl"));
+        std::fs::write(&f, TASK_LINES).unwrap();
+        let want = vec!["✔ 사과 세기", "✔ 배 세기", "✔ 감 세기", "▶ 포도 송이 세기"];
+        let (msgs, _n, _a) = read_transcript(f.to_str().unwrap(), 0);
+        let with: Vec<(&str, &Vec<String>)> = msgs.iter().filter(|m| !m.todos.is_empty()).map(|m| (m.tools[0].as_str(), &m.todos)).collect();
+        assert_eq!(with, vec![("TaskList", &want.iter().map(|s| s.to_string()).collect())]);
+        let p = read_transcript_page(f.to_str().unwrap(), None, 50, u64::MAX);
+        assert_eq!(p.messages.iter().rev().find(|m| !m.todos.is_empty()).map(|m| m.todos.clone()), Some(want.iter().map(|s| s.to_string()).collect()));
+        // 실측: 11개를 만들면 read_dir 은 1·10·11·2… 이름 순 — id 숫자 순으로 보인다
+        let many = claude.join("tasks/many");
+        std::fs::create_dir_all(&many).unwrap();
+        for n in 1..=11 {
+            let st = if n == 10 { "completed" } else { "pending" };
+            std::fs::write(many.join(format!("{n}.json")), format!(r#"{{"id":"{n}","subject":"항목 {n}","description":"항목 {n}","status":"{st}","blocks":[],"blockedBy":[]}}"#)).unwrap();
+        }
+        let got = task_todos(&many);
+        assert_eq!((got.len(), got[1].as_str(), got[9].as_str(), got[10].as_str()), (11, "· 항목 2", "✔ 항목 10", "· 항목 11"));
+    }
+    const TASK_FILES: [&str; 4] = [
+        r#"{"id":"1","subject":"사과 세기","description":"사과 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+        r#"{"id":"2","subject":"배 세기","description":"배 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+        r#"{"id":"3","subject":"감 세기","description":"감 세기","status":"completed","blocks":[],"blockedBy":[]}"#,
+        r#"{"id":"4","subject":"포도 송이 세기","description":"포도 세기","status":"in_progress","blocks":[],"blockedBy":[]}"#,
+    ];
+    const TASK_LINES: &str = concat!(
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01C8udNdTfSvzRX1icxaMQt2","name":"TaskCreate","input":{"subject":"포도 세기","description":"포도 세기"}}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01C8udNdTfSvzRX1icxaMQt2","type":"tool_result","content":"Task #4 created successfully: 포도 세기"}]},"toolUseResult":{"task":{"id":"4","subject":"포도 세기","description":"포도 세기"}},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_015Z1Agxrp4SQyMjNwsp6qkT","name":"TaskCreate","input":{"subject":"귤 세기","description":"귤 세기"}}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_015Z1Agxrp4SQyMjNwsp6qkT","type":"tool_result","content":"Task #5 created successfully: 귤 세기"}]},"toolUseResult":{"task":{"id":"5","subject":"귤 세기","description":"귤 세기"}},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0196GwTaBZSP4cEwUVxdpm97","name":"TaskUpdate","input":{"taskId":"4","subject":"포도 송이 세기","status":"in_progress"}}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01XypkjZyg96g3v5iFYLhU7z","name":"TaskUpdate","input":{"taskId":"5","status":"deleted"}}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_0196GwTaBZSP4cEwUVxdpm97","type":"tool_result","content":"Updated task #4 subject, status"}]},"toolUseResult":{"success":true,"taskId":"4","updatedFields":["subject","status"],"statusChange":{"from":"pending","to":"in_progress"}},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01XypkjZyg96g3v5iFYLhU7z","type":"tool_result","content":"Updated task #5 deleted"}]},"toolUseResult":{"success":true,"taskId":"5","updatedFields":["deleted"],"statusChange":{"from":"pending","to":"deleted"}},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01HRhe2cTruYPjpZrb7Tjm7q","name":"TaskList","input":{}}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01HRhe2cTruYPjpZrb7Tjm7q","type":"tool_result","content":"#1 [completed] 사과 세기\n#2 [completed] 배 세기\n#3 [completed] 감 세기\n#4 [in_progress] 포도 송이 세기"}]},"toolUseResult":{"tasks":[{"id":"1","subject":"사과 세기","status":"completed","blockedBy":[]},{"id":"2","subject":"배 세기","status":"completed","blockedBy":[]},{"id":"3","subject":"감 세기","status":"completed","blockedBy":[]},{"id":"4","subject":"포도 송이 세기","status":"in_progress","blockedBy":[]}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+        r##"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"\"포도 세기\"를 \"포도 송이 세기\"로 바꿔 in_progress로 두었고, \"귤 세기\"는 삭제했습니다. TaskList에는 #1~#3 completed, #4 in_progress만 남아 있습니다."}]},"sessionId":"55c8b0d2-5119-4c1f-a300-998ecb893558"}"##, "\n",
+    );
 }
