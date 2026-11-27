@@ -114,6 +114,16 @@ export default function Index() {
     }, [refresh, refreshNeeds])
   );
 
+  // 「작업 중」 pill 이 있는 동안만, 화면이 보일 때만 10초마다 조용히 재조회 — 열어 둔 채로도 끝난 실행의 pill 이 풀린다(projects.tsx 와 같은 기준)
+  const hasWorking = Object.values(statusById).some((ps) => ps.some((p) => p.agent_status === "working"));
+  useFocusEffect(
+    useCallback(() => {
+      if (!hasWorking) return;
+      const iv = setInterval(refresh, 10000);
+      return () => clearInterval(iv);
+    }, [hasWorking, refresh])
+  );
+
   async function handleRefresh() {
     setRefreshing(true);
     await Promise.all([refresh(), refreshNeeds()]);
