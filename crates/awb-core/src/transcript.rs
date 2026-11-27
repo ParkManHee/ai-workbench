@@ -390,8 +390,9 @@ fn sessions_in(dir: &str, live_ids: &std::collections::HashSet<String>, app_live
         let updated = e.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
         let (msgs, _n, active) = read_transcript(p.to_str().unwrap_or(""), 0);
-        // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 취소·비정상 종료엔 턴 종료 줄이 안 남아 90초 창만으론 남는다
-        let active = active && (!app || app_live.contains(&sid));
+        // 앱 실행은 프로세스가 살아 있는 동안 작업 중 — 취소·비정상 종료엔 턴 종료 줄이 안 남고, 백그라운드 명령 중엔 end_turn 뒤에도 실행이 이어진다
+        // shortcut: 실행이 아닌데 오래 떠 있는 sdk-cli 프로세스는 계속 작업 중으로 보인다, 그런 항목이 관측되면 데몬 run 레지스트리 기준으로 올린다
+        let active = if app { app_live.contains(&sid) } else { active };
         // 미리보기: 최근 질문·최근 답변 요약(마지막 것 기준) — 리스트에서 대화의 현재 상태가 보이게
         let preview = msgs.iter().rev().find(|m| m.role == "user" && !m.text.trim().is_empty())
             .map(|m| snippet(&m.text)).unwrap_or_default();
@@ -428,7 +429,7 @@ mod tests {
         let got: Vec<(String, u64, bool)> = fresh_live_sessions(&reg, &live, "/nx/repo/", &listed).into_iter().map(|s| (s.session_id, s.updated, s.live)).collect();
         assert_eq!(got, vec![("new-1".to_string(), 7, true)], "대화 파일 있는 세션·죽은 세션·다른 폴더 세션은 빼고 새 터미널 세션만");
     }
-    // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 취소로 죽은 실행은 턴 종료 줄이 없어도 아니다. 터미널 세션은 90초 창 그대로
+    // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 취소로 죽은 실행은 턴 종료 줄이 없어도 아니고, 백그라운드 명령 중인 실행은 end_turn 뒤에도 그렇다. 터미널 세션은 90초 창 그대로
     #[test]
     fn dead_app_run_is_not_active_but_live_app_and_terminal_are() {
         let base = std::env::temp_dir().join("awb_tx_app_alive");
@@ -438,7 +439,9 @@ mod tests {
         std::fs::create_dir_all(&reg).unwrap();
         for (sid, ep) in [("app-live", "sdk-cli"), ("app-dead", "sdk-cli"), ("term", "cli")] {
             let turn = format!("{{\"type\":\"user\",\"entrypoint\":\"{ep}\",\"message\":{{\"role\":\"user\",\"content\":\"질문\"}}}}\n");
-            std::fs::write(tx.join(format!("{sid}.jsonl")), turn).unwrap();
+            // 살아 있는 앱 실행은 백그라운드 명령을 띄우고 첫 응답이 end_turn 으로 끝난 상태
+            let end = if sid == "app-live" { "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":\"백그라운드로 돌립니다\"}}\n" } else { "" };
+            std::fs::write(tx.join(format!("{sid}.jsonl")), format!("{turn}{end}")).unwrap();
         }
         // pid 2 는 SIGKILL 로 남은 레지스트리 파일 — 프로세스가 없어 시작시각을 못 얻는다. pid 4 는 죽은 앱 세션을 터미널에 열어 두기만 한 것
         for (pid, sid, ep) in [(1, "app-live", "sdk-cli"), (2, "app-dead", "sdk-cli"), (3, "term", "cli"), (4, "app-dead", "cli")] {

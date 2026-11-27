@@ -37,6 +37,18 @@ impl PushStore {
     }
 }
 
+/// 완료를 본 워처가 WS 쪽 finish(mark_notified)를 기다릴 최대 틱 — WS 가 죽은 연결의 send 에 묶여도 완료 처리가 무한히 밀리지 않게(10틱 = 15초).
+const DONE_WAIT_TICKS: u32 = 10;
+
+/// 워처가 done 을 먼저 봐도 폰이 스트림에 붙어 있으면 WS 가 done 을 전달·게이트를 닫을 때까지 미룬다 — 먼저 통과하면 보고 있던 실행에도 푸시가 나간다.
+pub fn defer_done(reg: &crate::runreg::RunRegistry, run_id: &str, waited: &mut u32) -> bool {
+    if *waited >= DONE_WAIT_TICKS || !reg.is_attached(run_id) {
+        return false;
+    }
+    *waited += 1;
+    true
+}
+
 /// 워처가 발송해도 되는지: WS가 이미 소비(mark_notified)했으면 false, 아직이면 true(그리고 워처가 소비 처리).
 pub fn should_push(reg: &crate::runreg::RunRegistry, run_id: &str) -> bool {
     reg.mark_notified(run_id)
@@ -170,6 +182,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
         let timeout = run_timeout_secs();
         let started = std::time::Instant::now();
         let mut progress = ProgressThrottle::default();
+        let mut done_waited = 0;
         loop {
             let chunk = awb_core::runlog::read_log(&meta.log, 0);
             record_rate_limit(&st, &meta.project, &chunk.text);
@@ -197,7 +210,7 @@ pub fn spawn_watch(st: crate::routes::AppState, run_id: String) {
                 awb_core::runner::cancel_run(meta.pgid, &meta.workdir);
                 awb_core::runlog::mark_done_if_absent(&meta.log, 124);
             }
-            if chunk.done {
+            if chunk.done && !defer_done(&st.runs, &run_id, &mut done_waited) {
                 let status = awb_core::runlog::run_status(&meta.log, &meta.workdir);
                 // WS가 붙어있지 않은 push-only 완료 경로에서도 --resume용 session_id를 캡처한다.
                 // (WS 루프는 라인 단위로 파싱하지만, 여기선 WS가 없었을 수 있으므로 로그 전체를 읽어 찾는다.)
@@ -263,6 +276,28 @@ mod tests {
             RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None },
         );
         assert!(should_push(&r, "y")); // 워처가 발송
+    }
+
+    #[test]
+    fn watcher_defers_done_while_ws_attached_then_skips_push() {
+        let r = RunRegistry::new();
+        r.insert("x", RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None });
+        let mut waited = 0;
+        r.attach("x");
+        assert!(defer_done(&r, "x", &mut waited)); // 워처가 먼저 done 을 봐도 WS 가 붙어 있으면 미룬다
+        assert!(r.mark_notified("x")); // WS finish 가 게이트를 닫고
+        r.detach("x"); // 소켓을 닫는다
+        assert!(!defer_done(&r, "x", &mut waited));
+        assert!(!should_push(&r, "x")); // 보고 있던 실행은 푸시 없음
+        // WS 가 없으면(앱 백그라운드) 바로 처리하고 푸시
+        r.insert("y", RunMeta { log: "l".into(), pgid: 1, workdir: "w".into(), project: "p".into(), notified: false, fork_of: None, worktree: None });
+        assert!(!defer_done(&r, "y", &mut 0));
+        assert!(should_push(&r, "y"));
+        // 끝나지 않는 WS 라도 상한 뒤엔 처리
+        r.attach("y");
+        let mut w = 0;
+        while defer_done(&r, "y", &mut w) {}
+        assert_eq!(w, DONE_WAIT_TICKS);
     }
 
     fn step(s: &str) -> Option<crate::streamevt::Progress> {

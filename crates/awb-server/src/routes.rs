@@ -87,7 +87,9 @@ fn project_dtos(st: &AppState, tx_root: &str, live_ids: &std::collections::HashS
 
 /// 프로젝트 「작업 중」 은 세션 줄 배지(active)와 같은 근거여야 한다 — 파일 수정 시각만 보면 턴이 끝난 뒤에도 90초 남는다.
 fn settle_working(status: Option<String>, sessions: &[crate::sessions::SessionRow]) -> Option<String> {
-    if status.as_deref() == Some("working") && !sessions.iter().any(|s| s.info.active) { return None; }
+    // 격리 트리 세션은 project_status(원 저장소 폴더만 본다)에 안 잡힌다 — 세션 줄 쪽 근거로 켠다
+    if sessions.iter().any(|s| s.info.active) { return Some("working".to_string()); }
+    if status.as_deref() == Some("working") { return None; }
     status
 }
 
@@ -642,20 +644,20 @@ pub async fn transcript_handler(State(st): State<AppState>, Path((project, sessi
     if !awb_core::transcript::safe_session_id(&session_id) { return Err(StatusCode::BAD_REQUEST); }
     let proj = awb_core::scan::scan_roots(&st.roots).into_iter().find(|p| p.name == project).ok_or(StatusCode::NOT_FOUND)?;
     let path = crate::worktree::transcript_file(&st, &project, &proj.path, &session_id);
-    // 앱 실행은 프로세스가 살아 있을 때만 작업 중 — 목록(sessions_in)과 같은 기준
-    let alive = || awb_core::transcript::last_entrypoint(&path).as_deref() != Some("sdk-cli") || awb_core::live::live_app_ids().contains(&session_id);
+    // 앱 실행은 프로세스가 살아 있는 동안 작업 중 — 목록(sessions_in)과 같은 기준
+    let active = |a: bool| if awb_core::transcript::last_entrypoint(&path).as_deref() == Some("sdk-cli") { awb_core::live::live_app_ids().contains(&session_id) } else { a };
     if q.tail == Some(1) {
         // 최초 로드: 최근 1시간(최대 limit, 기본 100), 없으면 마지막 20개 폴백
         let page = awb_core::transcript::read_transcript_page(&path, None, q.limit.unwrap_or(100), 3600);
-        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active && alive() })));
+        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": active(page.active) })));
     }
     if let Some(u) = q.until {
         // 위로 스크롤: u 이전 메시지 마지막 limit(기본 50)개
         let page = awb_core::transcript::read_transcript_page(&path, Some(u), q.limit.unwrap_or(50), 3600);
-        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": page.active && alive() })));
+        return Ok(Json(serde_json::json!({ "messages": page.messages, "prev": page.prev, "next": page.next, "active": active(page.active) })));
     }
-    let (msgs, next, active) = awb_core::transcript::read_transcript(&path, q.from);
-    Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active && alive() })))
+    let (msgs, next, active_now) = awb_core::transcript::read_transcript(&path, q.from);
+    Ok(Json(serde_json::json!({ "messages": msgs, "next": next, "active": active(active_now) })))
 }
 
 /// PC 터미널에서 열린 대화형 세션을 앱에서 끝낸다. 레지스트리·시작시각·cwd 가 모두 맞는 pid 에만 신호를 보낸다.
@@ -809,6 +811,7 @@ mod tests {
         assert_eq!(settle_working(w(), &[]), None);
         assert_eq!(settle_working(w(), &[row(false), row(true)]), w());
         assert_eq!(settle_working(Some("waiting".into()), &[row(false)]), Some("waiting".into()));
+        assert_eq!(settle_working(None, &[row(true)]), w()); // 격리 트리 세션만 작업 중 — 원 저장소 폴더 상태엔 안 잡힌다
     }
 
     #[test]
